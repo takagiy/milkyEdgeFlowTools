@@ -10,3 +10,14 @@ type = "add-on"
 blender_version_min = "5.0.0"
 
 license = ["SPDX:GPL-3.0-or-later"]
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  ".*",
+  "/dist/",
+  "/test_*.py",
+  "/pyproject.toml",
+  "/uv.lock",
+  "/requirements.md",
+]

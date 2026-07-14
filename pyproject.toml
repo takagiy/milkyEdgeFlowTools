@@ -1,0 +1,38 @@
+[project]
+name = "milky-edge-flow-tools"
+version = "0.1.0"
+description = "Blender extension: relax crossing edge flows by resampling selected edge loops"
+requires-python = ">=3.11"
+
+[dependency-groups]
+dev = ["poethepoet>=0.30"]
+
+[tool.uv]
+package = false
+
+# Override with the BLENDER env var if Blender lives elsewhere.
+[tool.poe.env]
+BLENDER.default = "C:/Program Files/Blender Foundation/Blender 5.0/blender.exe"
+
+[tool.poe.tasks.test-core]
+help = "Run pure-logic unit tests (no Blender needed)"
+cmd = "python test_core.py"
+
+[tool.poe.tasks.test-blender]
+help = "Run the integration test inside headless Blender"
+cmd = '"${BLENDER}" --background --factory-startup --python-exit-code 1 --python test_blender.py'
+
+[tool.poe.tasks.test]
+help = "Run all tests"
+sequence = ["test-core", "test-blender"]
+
+[tool.poe.tasks.validate]
+help = "Validate the extension manifest"
+cmd = '"${BLENDER}" --factory-startup --command extension validate .'
+
+[tool.poe.tasks.build]
+help = "Build the extension zip into dist/"
+sequence = [
+  { script = "os:makedirs('dist', exist_ok=True)" },
+  { cmd = '"${BLENDER}" --factory-startup --command extension build --source-dir . --output-dir dist' },
+]

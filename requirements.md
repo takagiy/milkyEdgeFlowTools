@@ -151,8 +151,23 @@ Extension 形式（Blender 5.0 以降）として、以下で構成される。
 
 - `__init__.py` -- アドオン本体（bpy / bmesh 統合、オペレータ、メニュー、翻訳）
 - `core.py` -- 純ロジック（チェーン分解、曲線、外挿、ソルバー。bpy に依存しない）
-- `blender_manifest.toml` -- Extension メタデータ
+- `blender_manifest.toml` -- Extension メタデータ（`[build]` で配布 zip の除外パターンを定義）
 - `test_core.py` -- core.py のテスト。Blender 外の素の Python で実行可能
+- `test_blender.py` -- ヘッドレス Blender で実行する統合テスト
 - `requirements.md` -- 本書
 
+配布 zip に含まれるのは `__init__.py` / `core.py` / `blender_manifest.toml` のみ。
+
 ライセンス: GPL-3.0-or-later
+
+## 10. 開発ツーリング
+
+依存管理は uv、タスクランナーは poethepoet（`pyproject.toml` に定義）。Blender の場所は環境変数 `BLENDER` で上書きできる（デフォルト: `C:/Program Files/Blender Foundation/Blender 5.0/blender.exe`）。
+
+| コマンド | 内容 |
+|---|---|
+| `uv run poe test` | 全テスト（ユニット + Blender 統合） |
+| `uv run poe test-core` | ユニットテストのみ（Blender 不要） |
+| `uv run poe test-blender` | ヘッドレス Blender での統合テスト |
+| `uv run poe validate` | Extension マニフェストの検証 |
+| `uv run poe build` | 配布 zip を `dist/` にビルド |
