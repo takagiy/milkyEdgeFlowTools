@@ -12,24 +12,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
 
-      - name: Unit tests
-        run: uv run poe test-core
-
-      - name: Install Blender
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1 \
-            libxkbcommon0 libsm6
-          curl -fsSL "https://download.blender.org/release/Blender5.0/blender-5.0.1-linux-x64.tar.xz" \
-            -o /tmp/blender.tar.xz
-          mkdir -p "$HOME/blender"
-          tar -xf /tmp/blender.tar.xz -C "$HOME/blender" --strip-components=1
-          echo "BLENDER=$HOME/blender/blender" >> "$GITHUB_ENV"
-
-      - name: Integration tests
-        run: uv run poe test-blender
+      - name: Tests (unit + bpy integration)
+        run: uv run poe test
 
       - name: Validate manifest
         run: uv run poe validate

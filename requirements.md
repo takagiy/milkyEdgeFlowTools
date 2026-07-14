@@ -162,12 +162,20 @@ Extension 形式（Blender 5.0 以降）として、以下で構成される。
 
 ## 10. 開発ツーリング
 
-依存管理は uv、タスクランナーは poethepoet（`pyproject.toml` に定義）。Blender の場所は環境変数 `BLENDER` で上書きできる（デフォルト: `C:/Program Files/Blender Foundation/Blender 5.0/blender.exe`）。
+依存管理は uv、タスクランナーは poethepoet（`pyproject.toml` に定義）。開発・CI/CD は Blender 本体に依存しない。
+
+- Python は Blender 5.0 同梱版に合わせて 3.11 に固定（bpy wheel の要求）
+- 統合テストは PyPI の公式 `bpy` wheel（5.0.1）に対して実行する
+- ビルド・検証は Blender 公式の単体スクリプト `tools/blender_ext.py`（Blender ソース v5.0.1 タグからベンダリング、SHA-256 は `tools/blender_ext.py.sha256`）で行う。出力は `blender --command extension build` と同一
+- 実機 Blender での確認用に `test-blender-app` を残している（環境変数 `BLENDER` で場所を指定。デフォルト: `C:/Program Files/Blender Foundation/Blender 5.0/blender.exe`）
 
 | コマンド | 内容 |
 |---|---|
-| `uv run poe test` | 全テスト（ユニット + Blender 統合） |
-| `uv run poe test-core` | ユニットテストのみ（Blender 不要） |
-| `uv run poe test-blender` | ヘッドレス Blender での統合テスト |
+| `uv run poe test` | 全テスト（ユニット + bpy 統合） |
+| `uv run poe test-core` | ユニットテストのみ |
+| `uv run poe test-blender` | bpy wheel に対する統合テスト |
+| `uv run poe test-blender-app` | 同じテストを実機 Blender で実行（任意） |
 | `uv run poe validate` | Extension マニフェストの検証 |
 | `uv run poe build` | 配布 zip を `dist/` にビルド |
+
+Blender のバージョンを上げる際は、`bpy` の依存バージョン・`tools/blender_ext.py`・`blender_version_min` を揃えて更新する。

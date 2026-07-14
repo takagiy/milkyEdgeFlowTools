@@ -43,15 +43,18 @@ each vertex to where the crossing flows naturally want to arrive.
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/). Tasks are defined in
-`pyproject.toml` (poethepoet). If Blender is not at the default location, set
-the `BLENDER` environment variable.
+Requires [uv](https://docs.astral.sh/uv/) only — no Blender installation
+needed. Integration tests run against the official
+[bpy wheel](https://pypi.org/project/bpy/), and builds use a vendored copy
+of Blender's official `blender_ext.py` (`tools/`). Tasks are defined in
+`pyproject.toml` (poethepoet).
 
 | Command | Description |
 |---|---|
-| `uv run poe test` | All tests (unit + headless Blender integration) |
-| `uv run poe test-core` | Unit tests only (no Blender needed) |
-| `uv run poe test-blender` | Integration test inside headless Blender |
+| `uv run poe test` | All tests (unit + bpy integration) |
+| `uv run poe test-core` | Unit tests only |
+| `uv run poe test-blender` | Integration test against the bpy wheel |
+| `uv run poe test-blender-app` | Same test inside a real Blender (optional; set `BLENDER` if not at the default path) |
 | `uv run poe validate` | Validate the extension manifest |
 | `uv run poe build` | Build the distributable zip into `dist/` |
 

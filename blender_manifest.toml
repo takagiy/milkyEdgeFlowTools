@@ -25,4 +25,5 @@ paths_exclude_pattern = [
   "/CHANGELOG.md",
   "/version.txt",
   "/release-please-config.json",
+  "/tools/",
 ]

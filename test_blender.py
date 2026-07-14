@@ -1,7 +1,7 @@
-"""Integration test for the operator, run inside Blender:
+"""Integration test for the operator.
 
-  blender --background --factory-startup --python-exit-code 1 \
-          --python test_blender.py
+Runs against the official bpy wheel (uv run poe test-blender) or inside a
+real Blender (uv run poe test-blender-app).
 
 Builds a 7x7 grid whose middle column is shifted along the loop direction,
 selects that column as an edge loop, runs Relax Crossing Flows, and checks
@@ -12,8 +12,10 @@ stayed pinned.
 import os
 import sys
 
-import bmesh
+# bpy must be imported before bmesh: the standalone bpy wheel sets up the
+# search path for its bundled modules on first import.
 import bpy
+import bmesh
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
