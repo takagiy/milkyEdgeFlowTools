@@ -1,0 +1,262 @@
+"""Tests for milkyEdgeFlowTools pure-logic core (core.py).
+
+core.py has no bpy dependency; run with any Python:
+  python test_core.py
+
+Canon TDD test list
+-------------------
+Chain decomposition:
+  [x] open chain is ordered end-to-end
+  [x] closed loop is detected
+  [x] branched component is skipped and counted
+  [x] multiple components are returned separately
+Curve (centripetal Catmull-Rom, arc-length parameterized):
+  [x] passes through knots (open)
+  [x] point_at(0) / point_at(total_length) are the endpoints
+  [x] closed curve is periodic
+  [x] knot params are strictly increasing
+  [x] closest param to a ray hitting a straight curve
+  [x] ray pointing away falls back to closest approach at ray origin
+Flow extrapolation:
+  [x] direction from a straight incoming ring
+  [x] insufficient ring points -> None
+  [x] target delta on a straight curve
+  [x] target delta is clamped to clamp_span
+  [x] side blend mixes major (more rings) and minor side
+Smoothing solver:
+  [x] all pinned -> zero displacement
+  [x] uniform targets, no pins -> targets reached
+  [x] pin influence decays with distance
+  [x] missing targets are interpolated smoothly
+  [x] closed chain: pin influence wraps symmetrically
+Ordering:
+  [x] min spacing enforcement keeps sequence monotone
+Integration (relax_chain):
+  [x] straight grid with shifted crossing flows slides vertices onto the flows
+  [x] pinned vertex stays, factor blends result
+"""
+
+import math
+import unittest
+
+import core
+from core import (
+    CatmullRomCurve,
+    compute_vertex_target,
+    decompose_chains,
+    enforce_min_spacing,
+    flow_direction,
+    relax_chain,
+    solve_relaxed_params,
+)
+
+
+def vlen(a, b):
+    return math.dist(a, b)
+
+
+class TestDecomposeChains(unittest.TestCase):
+    def test_open_chain_ordered(self):
+        chains, skipped = decompose_chains([(0, 1), (1, 2), (2, 3)])
+        self.assertEqual(skipped, 0)
+        self.assertEqual(len(chains), 1)
+        verts, closed = chains[0]
+        self.assertFalse(closed)
+        self.assertIn(verts, ([0, 1, 2, 3], [3, 2, 1, 0]))
+
+    def test_closed_loop(self):
+        chains, skipped = decompose_chains([(0, 1), (1, 2), (2, 0)])
+        self.assertEqual(skipped, 0)
+        self.assertEqual(len(chains), 1)
+        verts, closed = chains[0]
+        self.assertTrue(closed)
+        self.assertEqual(set(verts), {0, 1, 2})
+        self.assertEqual(len(verts), 3)
+
+    def test_branch_skipped(self):
+        chains, skipped = decompose_chains([(0, 1), (0, 2), (0, 3)])
+        self.assertEqual(chains, [])
+        self.assertEqual(skipped, 1)
+
+    def test_multiple_components(self):
+        chains, skipped = decompose_chains(
+            [(0, 1), (1, 2), (10, 11), (11, 12), (12, 10)])
+        self.assertEqual(skipped, 0)
+        self.assertEqual(len(chains), 2)
+        kinds = sorted(closed for _, closed in chains)
+        self.assertEqual(kinds, [False, True])
+
+
+def straight_curve():
+    pts = [(0, 0, 0), (2.5, 0, 0), (5, 0, 0), (7.5, 0, 0), (10, 0, 0)]
+    return CatmullRomCurve(pts, closed=False), pts
+
+
+class TestCatmullRomCurve(unittest.TestCase):
+    def test_passes_through_knots_open(self):
+        pts = [(0, 0, 0), (1, 1, 0), (2, 0, 1), (3, -1, 0)]
+        curve = CatmullRomCurve(pts, closed=False)
+        for i, p in enumerate(pts):
+            got = curve.point_at(curve.knot_params[i])
+            self.assertLess(vlen(got, p), 1e-6)
+
+    def test_endpoints(self):
+        curve, pts = straight_curve()
+        self.assertLess(vlen(curve.point_at(0.0), pts[0]), 1e-6)
+        self.assertLess(vlen(curve.point_at(curve.total_length), pts[-1]),
+                        1e-6)
+
+    def test_closed_periodic(self):
+        pts = [(1, 0, 0), (0, 1, 0), (-1, 0, 0), (0, -1, 0)]
+        curve = CatmullRomCurve(pts, closed=True)
+        a = curve.point_at(0.0)
+        b = curve.point_at(curve.total_length)
+        self.assertLess(vlen(a, b), 1e-6)
+
+    def test_knot_params_increasing(self):
+        pts = [(0, 0, 0), (1, 1, 0), (2, 0, 1), (3, -1, 0)]
+        curve = CatmullRomCurve(pts, closed=False)
+        for a, b in zip(curve.knot_params, curve.knot_params[1:]):
+            self.assertLess(a, b)
+
+    def test_closest_param_to_ray_hit(self):
+        curve, _ = straight_curve()
+        s, dist = curve.closest_param_to_ray((3, 5, 0), (0, -1, 0))
+        self.assertAlmostEqual(s, 3.0, delta=0.05)
+        self.assertLess(dist, 0.05)
+
+    def test_closest_param_to_ray_pointing_away(self):
+        curve, _ = straight_curve()
+        s, dist = curve.closest_param_to_ray((3, 5, 0), (0, 1, 0))
+        self.assertAlmostEqual(s, 3.0, delta=0.05)
+        self.assertAlmostEqual(dist, 5.0, delta=0.05)
+
+
+class TestFlowExtrapolation(unittest.TestCase):
+    def test_direction_straight_ring(self):
+        d = flow_direction([(1, 0, 0), (2, 0, 0), (3, 0, 0)])
+        self.assertLess(vlen(d, (-1, 0, 0)), 1e-6)
+
+    def test_direction_insufficient(self):
+        self.assertIsNone(flow_direction([(1, 0, 0)]))
+        self.assertIsNone(flow_direction([]))
+
+    def test_target_straight(self):
+        curve, _ = straight_curve()
+        sides = [[(3, 1, 0), (3, 2, 0)]]
+        delta = compute_vertex_target(curve, sides, s_orig=5.0,
+                                      side_blend=0.0, clamp_span=100.0)
+        self.assertAlmostEqual(delta, -2.0, delta=0.05)
+
+    def test_target_clamped(self):
+        curve, _ = straight_curve()
+        sides = [[(3, 1, 0), (3, 2, 0)]]
+        delta = compute_vertex_target(curve, sides, s_orig=5.0,
+                                      side_blend=0.0, clamp_span=1.0)
+        self.assertAlmostEqual(delta, -1.0, delta=1e-6)
+
+    def test_side_blend(self):
+        curve, _ = straight_curve()
+        major = [(3, 1, 0), (3, 2, 0), (3, 3, 0)]   # 3 rings -> delta -2
+        minor = [(6, -1, 0), (6, -2, 0)]            # 2 rings -> delta +1
+        for blend, expect in ((0.0, -2.0), (1.0, 1.0), (0.5, -0.5)):
+            delta = compute_vertex_target(curve, [minor, major], s_orig=5.0,
+                                          side_blend=blend, clamp_span=100.0)
+            self.assertAlmostEqual(delta, expect, delta=0.1)
+
+    def test_no_sides(self):
+        curve, _ = straight_curve()
+        self.assertIsNone(compute_vertex_target(curve, [], 5.0, 0.0, 100.0))
+
+
+class TestSolver(unittest.TestCase):
+    def test_all_pinned(self):
+        out = solve_relaxed_params([2.0] * 5, [True] * 5,
+                                   stiffness=1.0, closed=False)
+        for d in out:
+            self.assertAlmostEqual(d, 0.0, delta=1e-4)
+
+    def test_uniform_targets_no_pins(self):
+        out = solve_relaxed_params([2.0] * 5, [False] * 5,
+                                   stiffness=1.0, closed=False)
+        for d in out:
+            self.assertAlmostEqual(d, 2.0, delta=1e-4)
+
+    def test_pin_influence_decays(self):
+        n = 11
+        out = solve_relaxed_params([1.0] * n, [True] + [False] * (n - 1),
+                                   stiffness=4.0, closed=False)
+        self.assertAlmostEqual(out[0], 0.0, delta=1e-3)
+        self.assertLess(out[1], out[5])
+        self.assertLess(out[5], out[10])
+        self.assertLess(out[10], 1.0 + 1e-6)
+
+    def test_interpolates_missing(self):
+        targets = [0.0] + [None] * 9 + [10.0]
+        out = solve_relaxed_params(targets, [False] * 11,
+                                   stiffness=1.0, closed=False)
+        self.assertAlmostEqual(out[5], 5.0, delta=1.0)
+        for a, b in zip(out, out[1:]):
+            self.assertLessEqual(a, b + 1e-6)
+
+    def test_closed_wraps_symmetrically(self):
+        n = 8
+        out = solve_relaxed_params([1.0] * n, [True] + [False] * (n - 1),
+                                   stiffness=2.0, closed=True)
+        self.assertAlmostEqual(out[0], 0.0, delta=1e-3)
+        self.assertAlmostEqual(out[1], out[7], delta=1e-6)
+        self.assertAlmostEqual(out[2], out[6], delta=1e-6)
+
+
+class TestOrdering(unittest.TestCase):
+    def test_min_spacing_open(self):
+        s = enforce_min_spacing([0.0, 2.0, 1.9, 5.0], closed=False,
+                                total_length=10.0, min_gap=0.05)
+        for a, b in zip(s, s[1:]):
+            self.assertGreaterEqual(b - a, 0.05 - 1e-9)
+        self.assertAlmostEqual(s[0], 0.0)
+        self.assertAlmostEqual(s[3], 5.0)
+
+
+class TestRelaxChain(unittest.TestCase):
+    def make_inputs(self):
+        n = 7
+        points = [(float(x), 0.0, 0.0) for x in range(n)]
+        # Crossing flows come straight down at x = i + 0.5 for vertices 0..5;
+        # the last vertex has no crossing flow.
+        sides = []
+        for i in range(n - 1):
+            x = i + 0.5
+            sides.append([[(x, 1.0, 0.0), (x, 2.0, 0.0)]])
+        sides.append([])
+        return points, sides
+
+    def test_slides_onto_flows(self):
+        points, sides = self.make_inputs()
+        out = relax_chain(points, closed=False, sides=sides,
+                          pinned=[False] * 7, side_blend=0.0,
+                          stiffness=1.0, factor=1.0)
+        for i in range(1, 5):
+            self.assertAlmostEqual(out[i][0], i + 0.5, delta=0.15)
+            self.assertAlmostEqual(out[i][1], 0.0, delta=1e-6)
+
+    def test_pin_and_factor(self):
+        points, sides = self.make_inputs()
+        pinned = [False] * 7
+        pinned[3] = True
+        out = relax_chain(points, closed=False, sides=sides, pinned=pinned,
+                          side_blend=0.0, stiffness=1.0, factor=1.0)
+        self.assertAlmostEqual(out[3][0], 3.0, delta=1e-3)
+
+        half = relax_chain(points, closed=False, sides=sides,
+                           pinned=[False] * 7, side_blend=0.0,
+                           stiffness=1.0, factor=0.5)
+        full = relax_chain(points, closed=False, sides=sides,
+                           pinned=[False] * 7, side_blend=0.0,
+                           stiffness=1.0, factor=1.0)
+        for h, f, p in zip(half, full, points):
+            self.assertAlmostEqual(h[0], (f[0] + p[0]) / 2.0, delta=1e-6)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
