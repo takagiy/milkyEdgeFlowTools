@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "milky_edge_flow_tools"
-version = "0.2.0" # x-release-please-version
+version = "0.3.0" # x-release-please-version
 name = "milkyEdgeFlowTools"
 tagline = "Relax crossing edge flows by resampling selected edge loops"
 maintainer = "takagiy <takagiy.4dev@gmail.com>"

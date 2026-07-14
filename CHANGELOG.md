@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.2.0...v0.3.0) (2026-07-14)
+
+
+### Features
+
+* spiral flow extrapolation and vertex crowding protection ([fd06d24](https://github.com/takagiy/milkyEdgeFlowTools/commit/fd06d24d09bcbe4fc9955be4752f2b93ccb39a92))
+
 ## [0.2.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.1.0...v0.2.0) (2026-07-14)
 
 
