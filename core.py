@@ -16,6 +16,8 @@ from bisect import bisect_right
 # Weight used to emulate a hard constraint for pinned vertices in the
 # quadratic solver.
 _PIN_WEIGHT = 1.0e8
+# Weight of the one-sided anti-crowding springs added by the IRLS passes.
+_CROWD_WEIGHT = 10.0
 # Tiny diagonal regularization so vertices with no data term and zero
 # stiffness still yield a (zero) solution.
 _EPSILON = 1.0e-9
@@ -56,6 +58,49 @@ def _lerp(a, b, t):
     return (a[0] + (b[0] - a[0]) * t,
             a[1] + (b[1] - a[1]) * t,
             a[2] + (b[2] - a[2]) * t)
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _closest_segment_segment(p1, q1, p2, q2):
+    """Closest points between segments [p1,q1] and [p2,q2].
+
+    Returns (distance, param on the first segment in [0, 1]).
+    """
+    d1 = _sub(q1, p1)
+    d2 = _sub(q2, p2)
+    r = _sub(p1, p2)
+    a = _dot(d1, d1)
+    e = _dot(d2, d2)
+    f = _dot(d2, r)
+
+    def clamp01(x):
+        return min(max(x, 0.0), 1.0)
+
+    if a < 1.0e-18 and e < 1.0e-18:
+        return math.dist(p1, p2), 0.0
+    if a < 1.0e-18:
+        s, t = 0.0, clamp01(f / e)
+    else:
+        c = _dot(d1, r)
+        if e < 1.0e-18:
+            s, t = clamp01(-c / a), 0.0
+        else:
+            b = _dot(d1, d2)
+            denom = a * e - b * b
+            s = clamp01((b * f - c * e) / denom) if denom > 1.0e-18 else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                s, t = clamp01(-c / a), 0.0
+            elif t > 1.0:
+                s, t = clamp01((b - c) / a), 1.0
+    pt1 = _add(p1, _mul(d1, s))
+    pt2 = _add(p2, _mul(d2, t))
+    return math.dist(pt1, pt2), s
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +245,48 @@ class CatmullRomCurve:
         u = 0.0 if span < 1.0e-12 else (s - cum[j]) / span
         return _lerp(self._samples[j], self._samples[j + 1], u)
 
+    def _segment_ranges(self, s_center, s_window):
+        """Sample-segment index ranges covering s_center +- s_window."""
+        seg_count = len(self._samples) - 1
+        length = self.total_length
+        if (s_center is None or s_window is None
+                or 2.0 * s_window >= length):
+            return [(0, seg_count)]
+
+        def index_range(lo, hi):
+            j0 = max(0, bisect_right(self._cum, lo) - 1)
+            j1 = min(seg_count, bisect_right(self._cum, hi))
+            return (j0, j1)
+
+        if not self.closed:
+            return [index_range(max(0.0, s_center - s_window),
+                                min(length, s_center + s_window))]
+        lo = (s_center - s_window) % length
+        hi = (s_center + s_window) % length
+        if lo <= hi:
+            return [index_range(lo, hi)]
+        return [index_range(lo, length), index_range(0.0, hi)]
+
+    def closest_param_to_path(self, path, s_center=None, s_window=None):
+        """Arc-length param of the curve point closest to a polyline.
+
+        Optionally restricts the search to params within s_window of
+        s_center (targets outside that range would be clamped anyway).
+        Returns (s, distance).
+        """
+        samples, cum = self._samples, self._cum
+        best_s, best_dist = 0.0, math.inf
+        for j0, j1 in self._segment_ranges(s_center, s_window):
+            for j in range(j0, j1):
+                a, b = samples[j], samples[j + 1]
+                for k in range(len(path) - 1):
+                    dist, u = _closest_segment_segment(a, b, path[k],
+                                                       path[k + 1])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_s = cum[j] + u * (cum[j + 1] - cum[j])
+        return best_s, best_dist
+
     def closest_param_to_ray(self, origin, direction):
         """Arc-length param of the curve point closest to the ray.
 
@@ -268,6 +355,72 @@ def flow_direction(ring_points):
     return d1
 
 
+def extrapolation_path(ring_points, extent):
+    """Continuation of a crossing flow beyond its nearest point, or None.
+
+    Extrapolates as a curvature-decaying spiral: the discrete curvature of
+    the last three ring points is kept initially and decays exponentially
+    (kappa(s) = kappa0 * exp(-s / lam)), so curved flows keep their bend
+    near the loop but straighten out with distance. The total turning is
+    bounded by kappa0 * lam <= 90 degrees, so the path can never loop
+    back. With fewer than three points, or negligible curvature, this
+    degenerates to a straight ray of length `extent`.
+    """
+    direction = flow_direction(ring_points)
+    if direction is None:
+        return None
+    origin = tuple(map(float, ring_points[0]))
+
+    def straight():
+        return [origin, _add(origin, _mul(direction, extent))]
+
+    if len(ring_points) < 3:
+        return straight()
+
+    a, b, c = ring_points[2], ring_points[1], ring_points[0]
+    u = _sub(b, a)
+    v = _sub(c, b)
+    lu, lv, lw = _length(u), _length(v), math.dist(a, c)
+    binormal = _cross(u, v)
+    area2 = _length(binormal)
+    if min(lu, lv, lw) < 1.0e-12 or area2 < 1.0e-12:
+        return straight()
+
+    seg_mean = (lu + lv) / 2.0
+    kappa = min(2.0 * area2 / (lu * lv * lw), 2.0 / seg_mean)
+    if kappa * seg_mean < 1.0e-4:
+        return straight()
+    lam = min(3.0 * seg_mean, (math.pi / 2.0) / kappa)
+
+    # Initial heading: the last chord rotated by half its subtended angle
+    # approximates the tangent at the ring's nearest point.
+    bin_n = _normalize(binormal)
+    v_hat = _normalize(v)
+    side = _normalize(_cross(bin_n, v_hat))
+    phi = kappa * lv / 2.0
+    d0 = _normalize(_add(_mul(v_hat, math.cos(phi)),
+                         _mul(side, math.sin(phi))))
+    n0 = _normalize(_cross(bin_n, d0))
+    if d0 is None or n0 is None:
+        return straight()
+
+    points = [origin]
+    pos = origin
+    steps = 12
+    step = 4.0 * lam / steps
+    for k in range(steps):
+        s_mid = (k + 0.5) * step
+        theta = kappa * lam * (1.0 - math.exp(-s_mid / lam))
+        heading = _add(_mul(d0, math.cos(theta)), _mul(n0, math.sin(theta)))
+        pos = _add(pos, _mul(heading, step))
+        points.append(pos)
+    theta_end = kappa * lam * (1.0 - math.exp(-4.0))
+    heading = _add(_mul(d0, math.cos(theta_end)),
+                   _mul(n0, math.sin(theta_end)))
+    points.append(_add(pos, _mul(heading, extent)))
+    return points
+
+
 def compute_vertex_target(curve, sides, s_orig, side_blend, clamp_span):
     """Target arc-length displacement for one chain vertex, or None.
 
@@ -277,10 +430,13 @@ def compute_vertex_target(curve, sides, s_orig, side_blend, clamp_span):
     """
     candidates = []
     for ring in sides:
-        direction = flow_direction(ring)
-        if direction is None:
+        anchor_dist = math.dist(tuple(map(float, ring[0])),
+                                curve.point_at(s_orig)) if ring else 0.0
+        path = extrapolation_path(ring, 2.0 * (anchor_dist + clamp_span))
+        if path is None:
             continue
-        s, _dist = curve.closest_param_to_ray(ring[0], direction)
+        s, _dist = curve.closest_param_to_path(path, s_center=s_orig,
+                                               s_window=1.5 * clamp_span)
         delta = s - s_orig
         if curve.closed:
             length = curve.total_length
@@ -338,13 +494,17 @@ def _cyclic_thomas(sub, diag, sup, rhs, corner):
     return [y[i] - factor * z[i] for i in range(n)]
 
 
-def solve_relaxed_params(targets, pinned, stiffness, closed):
+def solve_relaxed_params(targets, pinned, stiffness, closed, spacing=None):
     """Solve for arc-length displacements delta_i.
 
     Minimizes  sum w_i (d_i - target_i)^2 + stiffness * sum (d_{i+1} - d_i)^2
     where w_i = 1 for vertices with a target, 0 otherwise, and pinned
     vertices are held at 0 via a large penalty weight. Pinned influence
     propagates through the smoothness term and decays with distance.
+
+    spacing, if given, maps a pair index i (the pair (i, i+1); i = n-1 is
+    the wrap pair of a closed chain) to (weight, rest) and adds the term
+    weight * (d_{i+1} - d_i - rest)^2 — the anti-crowding springs.
     """
     n = len(targets)
     if n == 0:
@@ -353,6 +513,7 @@ def solve_relaxed_params(targets, pinned, stiffness, closed):
         return [0.0 if pinned[0] or targets[0] is None else targets[0]]
 
     lam = max(0.0, stiffness)
+    spacing = spacing or {}
     weights = [0.0] * n
     rhs = [0.0] * n
     for i in range(n):
@@ -362,7 +523,8 @@ def solve_relaxed_params(targets, pinned, stiffness, closed):
             weights[i] = 1.0
             rhs[i] = targets[i]
 
-    use_cyclic = closed and n >= 3 and lam > _EPSILON
+    has_wrap_spring = closed and (n - 1) in spacing
+    use_cyclic = closed and n >= 3 and (lam > _EPSILON or has_wrap_spring)
     diag = [0.0] * n
     sub = [0.0] * n
     sup = [0.0] * n
@@ -375,30 +537,118 @@ def solve_relaxed_params(targets, pinned, stiffness, closed):
         if i < n - 1:
             sup[i] = -lam
 
+    corner = -lam
+    for i, (w, rest) in spacing.items():
+        if i < n - 1:
+            diag[i] += w
+            diag[i + 1] += w
+            sup[i] -= w
+            sub[i + 1] -= w
+            rhs[i] -= w * rest
+            rhs[i + 1] += w * rest
+        elif use_cyclic and i == n - 1:
+            diag[n - 1] += w
+            diag[0] += w
+            corner -= w
+            rhs[n - 1] -= w * rest
+            rhs[0] += w * rest
+
     if use_cyclic:
-        return _cyclic_thomas(sub, diag, sup, rhs, -lam)
+        return _cyclic_thomas(sub, diag, sup, rhs, corner)
     return _thomas(sub, diag, sup, rhs)
 
 
 # ---------------------------------------------------------------------------
-# Ordering safety
+# Minimum-spacing projection
 # ---------------------------------------------------------------------------
 
-def enforce_min_spacing(params, closed, total_length, min_gap):
-    """Keep arc-length params monotone so vertices cannot swap order."""
-    out = list(params)
-    n = len(out)
-    for i in range(1, n):
-        if out[i] < out[i - 1] + min_gap:
-            out[i] = out[i - 1] + min_gap
-    if closed and n >= 2:
-        limit = out[0] + total_length - min_gap
-        if out[n - 1] > limit:
-            out[n - 1] = limit
-            for i in range(n - 2, 0, -1):
-                if out[i] > out[i + 1] - min_gap:
-                    out[i] = out[i + 1] - min_gap
+def _pava(values):
+    """Isotonic (non-decreasing) L2 regression, pool-adjacent-violators."""
+    pooled = []
+    counts = []
+    for x in values:
+        pooled.append(x)
+        counts.append(1)
+        while len(pooled) > 1 and pooled[-2] > pooled[-1]:
+            v = pooled.pop()
+            c = counts.pop()
+            pooled[-1] = (pooled[-1] * counts[-1] + v * c) / (counts[-1] + c)
+            counts[-1] += c
+    out = []
+    for v, c in zip(pooled, counts):
+        out.extend([v] * c)
     return out
+
+
+def _project_open(params, mins, pinned):
+    """Project params onto { t[i+1] - t[i] >= mins[i] }, keeping pins.
+
+    Substituting u_i = t_i - cumsum(mins) turns the constraints into plain
+    monotonicity, so the L2-closest feasible point is isotonic regression
+    (PAVA), solved independently on each run between pinned vertices and
+    clipped to the pinned boundary values.
+    """
+    n = len(params)
+    offsets = [0.0] * n
+    for i in range(1, n):
+        offsets[i] = offsets[i - 1] + mins[i - 1]
+    u = [params[i] - offsets[i] for i in range(n)]
+
+    i = 0
+    while i < n:
+        if pinned[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and not pinned[j]:
+            j += 1
+        lo = u[i - 1] if i > 0 else None
+        hi = u[j] if j < n else None
+        for k, value in enumerate(_pava(u[i:j])):
+            if lo is not None and value < lo:
+                value = lo
+            if hi is not None and value > hi:
+                value = hi
+            u[i + k] = value
+        i = j
+    return [u[i] + offsets[i] for i in range(n)]
+
+
+def project_min_spacing(params, gaps, pinned, beta, closed, total_length):
+    """Closest params where no gap shrinks below beta * its original size.
+
+    gaps are the original arc-length gaps (n-1 entries for open chains, n
+    including the wrap gap for closed ones). A tiny absolute floor is kept
+    even at beta = 0 so vertices can never swap order. Closed chains are
+    cut at the first pinned vertex (or anchored at vertex 0) and projected
+    as an open run whose both ends are fixed.
+    """
+    n = len(params)
+    if n < 2:
+        return list(params)
+    mean_gap = sum(gaps) / len(gaps)
+    floor = 1.0e-3 * mean_gap if mean_gap > 0 else 1.0e-9
+    mins = [max(beta * g, floor) for g in gaps]
+
+    if not closed:
+        return _project_open(list(params), mins, list(pinned))
+
+    anchor = next((i for i, p in enumerate(pinned) if p), 0)
+    rotated = [params[(anchor + k) % n]
+               + (total_length if anchor + k >= n else 0.0)
+               for k in range(n)]
+    rotated.append(params[anchor] + total_length)
+    pins = [pinned[(anchor + k) % n] for k in range(n)] + [True]
+    pins[0] = True
+    mins_rot = [mins[(anchor + k) % n] for k in range(n)]
+    projected = _project_open(rotated, mins_rot, pins)
+
+    result = list(params)
+    for k in range(n):
+        result[(anchor + k) % n] = (projected[k]
+                                    - (total_length
+                                       if anchor + k >= n else 0.0))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -431,13 +681,19 @@ def order_chains(dominant_sets):
 # Chain relaxation (orchestration)
 # ---------------------------------------------------------------------------
 
-def relax_chain_step(curve, params, sides, pinned, side_blend, stiffness):
+def relax_chain_step(curve, params, sides, pinned, side_blend, stiffness,
+                     min_spacing=0.3):
     """One relax pass over a chain on a fixed, prefitted curve.
 
     params are the current arc-length positions of the chain vertices on
     the curve; the returned list is the relaxed positions. Keeping the
     curve fixed across steps means iterating can never drift the shape of
     the loop.
+
+    Crowding protection (converging crossing flows aiming neighboring
+    vertices at nearly the same spot) is two-layered: IRLS passes add
+    one-sided springs to pairs compressed below min_spacing * their
+    original gap, then a PAVA projection enforces the floor exactly.
     """
     knots = curve.knot_params
     n = len(knots)
@@ -458,16 +714,31 @@ def relax_chain_step(curve, params, sides, pinned, side_blend, stiffness):
         targets.append(compute_vertex_target(curve, sides[i], params[i],
                                              side_blend, span))
 
-    deltas = solve_relaxed_params(targets, pinned, stiffness, curve.closed)
-    new_params = [params[i] + deltas[i] for i in range(n)]
+    springs = {}
+    new_params = params
+    for _ in range(3):
+        deltas = solve_relaxed_params(targets, pinned, stiffness,
+                                      curve.closed, spacing=springs or None)
+        new_params = [params[i] + deltas[i] for i in range(n)]
+        added = False
+        for i in range(len(gaps)):
+            nxt = (i + 1) % n
+            wrap = length if nxt == 0 else 0.0
+            gap_now = new_params[nxt] + wrap - new_params[i]
+            if (gap_now < min_spacing * gaps[i] - 1.0e-9
+                    and i not in springs):
+                base = params[nxt] + wrap - params[i]
+                springs[i] = (_CROWD_WEIGHT, min_spacing * gaps[i] - base)
+                added = True
+        if not added:
+            break
 
-    seg_count = n if curve.closed else n - 1
-    min_gap = 0.01 * (length / max(seg_count, 1))
-    return enforce_min_spacing(new_params, curve.closed, length, min_gap)
+    return project_min_spacing(new_params, gaps, pinned, min_spacing,
+                               curve.closed, length)
 
 
 def relax_chain(points, closed, sides, pinned, side_blend=0.0,
-                stiffness=1.0, factor=1.0, iterations=1):
+                stiffness=1.0, factor=1.0, iterations=1, min_spacing=0.3):
     """Compute relaxed positions for one chain.
 
     points: ordered chain vertex positions.
@@ -486,7 +757,7 @@ def relax_chain(points, closed, sides, pinned, side_blend=0.0,
     params = list(curve.knot_params)
     for _ in range(max(1, iterations)):
         params = relax_chain_step(curve, params, sides, pinned,
-                                  side_blend, stiffness)
+                                  side_blend, stiffness, min_spacing)
 
     result = []
     for i in range(n):

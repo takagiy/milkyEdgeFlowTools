@@ -99,6 +99,12 @@ class MESH_OT_milky_relax_crossing_flows(bpy.types.Operator):
                      "spread the influence of pinned vertices further"),
         default=1.0, min=0.0, max=100.0,
     )
+    min_spacing: FloatProperty(
+        name="Min Spacing",
+        description=("Minimum spacing between neighboring vertices, as a "
+                     "fraction of their original spacing"),
+        default=0.3, min=0.0, max=1.0, subtype='FACTOR',
+    )
     iterations: EnumProperty(
         name="Iterations",
         description="Number of times the relax pass is applied",
@@ -244,7 +250,7 @@ class MESH_OT_milky_relax_crossing_flows(bpy.types.Operator):
                        for rings in d["sides"]]
         d["params"] = core.relax_chain_step(
             d["curve"], d["params"], side_coords, d["pinned"],
-            self.side_blend, self.stiffness)
+            self.side_blend, self.stiffness, self.min_spacing)
         for vert, s, pin, orig in zip(d["verts"], d["params"], d["pinned"],
                                       d["points"]):
             vert.co = orig if pin else d["curve"].point_at(s)
@@ -297,6 +303,10 @@ _translations = {
         ("*", "Smoothness of the redistribution; higher values spread the "
               "influence of pinned vertices further"):
             "再配置の滑らかさ。値が大きいほど固定頂点の影響が遠くまで及ぶ",
+        ("*", "Min Spacing"): "最小間隔",
+        ("*", "Minimum spacing between neighboring vertices, as a fraction "
+              "of their original spacing"):
+            "隣接頂点間の間隔の下限（元の間隔に対する割合）",
         ("*", "Iterations"): "イテレーション回数",
         ("*", "Number of times the relax pass is applied"):
             "リラックス処理を適用する回数",
