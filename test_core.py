@@ -31,9 +31,16 @@ Smoothing solver:
   [x] closed chain: pin influence wraps symmetrically
 Ordering:
   [x] min spacing enforcement keeps sequence monotone
+Chain application order (order_chains):
+  [x] chains seen on the dominant side are applied first
+  [x] cyclic dependencies fall back to stable input order
+  [x] independent chains keep their input order
 Integration (relax_chain):
   [x] straight grid with shifted crossing flows slides vertices onto the flows
   [x] pinned vertex stays, factor blends result
+  [x] relax_chain_step on a fixed curve matches relax_chain
+  [x] relax_chain_step is idempotent once converged
+  [x] extra iterations do not change an already-converged result
 """
 
 import math
@@ -46,7 +53,9 @@ from core import (
     decompose_chains,
     enforce_min_spacing,
     flow_direction,
+    order_chains,
     relax_chain,
+    relax_chain_step,
     solve_relaxed_params,
 )
 
@@ -218,6 +227,21 @@ class TestOrdering(unittest.TestCase):
         self.assertAlmostEqual(s[3], 5.0)
 
 
+class TestOrderChains(unittest.TestCase):
+    def test_dominant_side_chains_first(self):
+        # Chain 1 sees chain 0 on its dominant side: 0 must be applied first.
+        self.assertEqual(order_chains([set(), {0}]), [0, 1])
+        # Chain 0 sees chain 1: 1 first.
+        self.assertEqual(order_chains([{1}, set()]), [1, 0])
+
+    def test_cycle_falls_back_to_stable_order(self):
+        self.assertEqual(order_chains([{1}, {0}]), [0, 1])
+
+    def test_independent_chains_keep_input_order(self):
+        self.assertEqual(order_chains([set(), set(), {1}]), [0, 1, 2])
+        self.assertEqual(order_chains([]), [])
+
+
 class TestRelaxChain(unittest.TestCase):
     def make_inputs(self):
         n = 7
@@ -256,6 +280,38 @@ class TestRelaxChain(unittest.TestCase):
                            stiffness=1.0, factor=1.0)
         for h, f, p in zip(half, full, points):
             self.assertAlmostEqual(h[0], (f[0] + p[0]) / 2.0, delta=1e-6)
+
+    def test_step_matches_relax_chain(self):
+        points, sides = self.make_inputs()
+        curve = CatmullRomCurve(points, closed=False)
+        params = relax_chain_step(curve, list(curve.knot_params), sides,
+                                  [False] * 7, side_blend=0.0, stiffness=1.0)
+        full = relax_chain(points, closed=False, sides=sides,
+                           pinned=[False] * 7, side_blend=0.0,
+                           stiffness=1.0, factor=1.0)
+        for s, expected in zip(params, full):
+            self.assertLess(vlen(curve.point_at(s), expected), 1e-9)
+
+    def test_step_idempotent_once_converged(self):
+        points, sides = self.make_inputs()
+        curve = CatmullRomCurve(points, closed=False)
+        params = relax_chain_step(curve, list(curve.knot_params), sides,
+                                  [False] * 7, side_blend=0.0, stiffness=1.0)
+        again = relax_chain_step(curve, params, sides,
+                                 [False] * 7, side_blend=0.0, stiffness=1.0)
+        for a, b in zip(params, again):
+            self.assertAlmostEqual(a, b, delta=1e-3)
+
+    def test_iterations_stable_when_converged(self):
+        points, sides = self.make_inputs()
+        once = relax_chain(points, closed=False, sides=sides,
+                           pinned=[False] * 7, side_blend=0.0,
+                           stiffness=1.0, factor=1.0)
+        many = relax_chain(points, closed=False, sides=sides,
+                           pinned=[False] * 7, side_blend=0.0,
+                           stiffness=1.0, factor=1.0, iterations=10)
+        for a, b in zip(once, many):
+            self.assertLess(vlen(a, b), 1e-3)
 
 
 if __name__ == "__main__":

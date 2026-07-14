@@ -53,11 +53,11 @@ def build_grid_object():
     return obj
 
 
-def select_column_loop(obj):
+def select_column_loop(obj, row_from=0, row_to=N - 1):
     bm = bmesh.from_edit_mesh(obj.data)
     bm.verts.ensure_lookup_table()
     loop_keys = {frozenset((vid(COL, r), vid(COL, r + 1)))
-                 for r in range(N - 1)}
+                 for r in range(row_from, row_to)}
     for e in bm.edges:
         key = frozenset((e.verts[0].index, e.verts[1].index))
         e.select = key in loop_keys
@@ -67,12 +67,40 @@ def select_column_loop(obj):
     bmesh.update_edit_mesh(obj.data)
 
 
-def main():
-    milkyEdgeFlowTools.register()
+def fresh_grid():
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
     for existing in list(bpy.data.objects):
         bpy.data.objects.remove(existing)
+    return build_grid_object()
 
-    obj = build_grid_object()
+
+def test_lock_ends_and_iterations():
+    """Partial selection (rows 1..5): normally both chain ends could move,
+    with Lock Ends they must stay, and iterations must keep converging."""
+    obj = fresh_grid()
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_column_loop(obj, row_from=1, row_to=N - 2)
+
+    result = bpy.ops.mesh.milky_relax_crossing_flows(lock_ends=True,
+                                                     iterations='5')
+    assert result == {'FINISHED'}, f"operator returned {result}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    for row in (1, N - 2):
+        co = bm.verts[vid(COL, row)].co
+        assert abs(co.y - (row + SHIFT)) < 1e-6, \
+            f"locked end at row {row} moved, y={co.y}"
+    mid = bm.verts[vid(COL, N // 2)].co
+    assert mid.y < N // 2 + SHIFT - 0.05, \
+        f"middle vertex did not relax with locked ends, y={mid.y}"
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+def main():
+    milkyEdgeFlowTools.register()
+    obj = fresh_grid()
     bpy.ops.object.mode_set(mode='EDIT')
     select_column_loop(obj)
 
@@ -108,6 +136,9 @@ def main():
                 f"unselected vertex ({col},{row}) moved to {tuple(co)}"
 
     bpy.ops.object.mode_set(mode='OBJECT')
+
+    test_lock_ends_and_iterations()
+
     milkyEdgeFlowTools.unregister()
     print("test_blender: ALL ASSERTIONS PASSED")
 

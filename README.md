@@ -40,6 +40,8 @@ each vertex to where the crossing flows naturally want to arrive.
 | Side Blend | 0.0 | Blend between the flow of the side with more rings (0) and fewer rings (1) |
 | Face Angle Limit | 90° | Crossing edges whose faces meet at this interior angle or less are treated as shape-defining and pinned |
 | Stiffness | 1.0 | Smoothness of the redistribution; higher values spread the influence of pinned vertices further |
+| Iterations | 1 | Number of times the relax pass is applied (1, 5, 10, 15, 20, 25, 30) |
+| Lock Ends | off | Keep both end vertices of each open edge loop in place |
 
 ## Development
 

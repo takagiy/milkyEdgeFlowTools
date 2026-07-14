@@ -9,7 +9,7 @@ import math
 
 import bmesh
 import bpy
-from bpy.props import FloatProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty
 
 from . import core
 
@@ -36,19 +36,19 @@ def _next_ring_edge(vert, incoming):
 
 
 def _walk_ring(vert, edge, max_steps=MAX_RING_STEPS):
-    """Points of the crossing loop beyond `edge`, nearest-first."""
-    points = []
+    """Vertices of the crossing loop beyond `edge`, nearest-first."""
+    ring = []
     cur_vert = edge.other_vert(vert)
     cur_edge = edge
-    points.append(tuple(cur_vert.co))
+    ring.append(cur_vert)
     for _ in range(max_steps - 1):
         nxt = _next_ring_edge(cur_vert, cur_edge)
         if nxt is None:
             break
         cur_vert = nxt.other_vert(cur_vert)
         cur_edge = nxt
-        points.append(tuple(cur_vert.co))
-    return points
+        ring.append(cur_vert)
+    return ring
 
 
 def _is_shape_edge(edge, angle_limit):
@@ -99,6 +99,18 @@ class MESH_OT_milky_relax_crossing_flows(bpy.types.Operator):
                      "spread the influence of pinned vertices further"),
         default=1.0, min=0.0, max=100.0,
     )
+    iterations: EnumProperty(
+        name="Iterations",
+        description="Number of times the relax pass is applied",
+        items=[(v, v, "") for v in ("1", "5", "10", "15", "20", "25", "30")],
+        default='1',
+    )
+    lock_ends: BoolProperty(
+        name="Lock Ends",
+        description=("Keep both end vertices of each open edge loop "
+                     "in place"),
+        default=False,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -138,22 +150,48 @@ class MESH_OT_milky_relax_crossing_flows(bpy.types.Operator):
         chain_keys = {_edge_key(e) for e in selected}
         chains, skipped = core.decompose_chains(
             [(e.verts[0].index, e.verts[1].index) for e in selected])
+        if not chains:
+            return 0, skipped
+
+        vert_chain = {}
+        for ci, (vert_indices, _closed) in enumerate(chains):
+            for vi in vert_indices:
+                vert_chain[vi] = ci
+
+        data = [self._extract_chain(bm, ci, chains[ci], chain_keys,
+                                    vert_chain)
+                for ci in range(len(chains))]
+        order = core.order_chains([d["dominant"] for d in data])
+
+        for _ in range(int(self.iterations)):
+            for ci in order:
+                self._relax_step(data[ci])
 
         moved = 0
-        for vert_indices, closed in chains:
-            if self._relax_chain(bm, vert_indices, closed, chain_keys):
+        for d in data:
+            changed = False
+            for vert, orig, pin in zip(d["verts"], d["points"], d["pinned"]):
+                new = orig
+                if not pin:
+                    new = tuple(orig[k] + (vert.co[k] - orig[k]) * self.factor
+                                for k in range(3))
+                if math.dist(orig, new) > 1.0e-9:
+                    changed = True
+                vert.co = new
+            if changed:
                 moved += 1
         if moved:
             bmesh.update_edit_mesh(mesh, loop_triangles=True,
                                    destructive=False)
         return moved, skipped
 
-    def _relax_chain(self, bm, vert_indices, closed, chain_keys):
+    def _extract_chain(self, bm, ci, chain, chain_keys, vert_chain):
+        vert_indices, closed = chain
         verts = [bm.verts[i] for i in vert_indices]
-        points = [tuple(v.co) for v in verts]
 
         sides = []
         pinned = []
+        dominant = set()
         for vert in verts:
             chain_edges = [e for e in vert.link_edges
                            if _edge_key(e) in chain_keys]
@@ -167,23 +205,49 @@ class MESH_OT_milky_relax_crossing_flows(bpy.types.Operator):
             pinned.append(any(_is_shape_edge(e, self.angle_limit)
                               for e in crossing))
             if len(crossing) <= 2:
-                sides.append([_walk_ring(vert, e) for e in crossing])
+                rings = [_walk_ring(vert, e) for e in crossing]
             else:
-                sides.append([])  # pole on the chain: no reliable flow
+                rings = []  # pole on the chain: no reliable flow
+            sides.append(rings)
 
-        new_points = core.relax_chain(
-            points, closed, sides, pinned,
-            side_blend=self.side_blend,
-            stiffness=self.stiffness,
-            factor=self.factor,
-        )
+            # Other chains visible on the dominant blend side must be
+            # relaxed before this one.
+            if len(rings) == 2:
+                major = 0 if len(rings[0]) >= len(rings[1]) else 1
+                dom_ring = rings[major if self.side_blend <= 0.5
+                                 else 1 - major]
+            else:
+                dom_ring = rings[0] if rings else []
+            for ring_vert in dom_ring:
+                cj = vert_chain.get(ring_vert.index)
+                if cj is not None and cj != ci:
+                    dominant.add(cj)
 
-        changed = False
-        for vert, old, new in zip(verts, points, new_points):
-            if math.dist(old, new) > 1.0e-9:
-                vert.co = new
-                changed = True
-        return changed
+        if self.lock_ends and not closed and len(verts) >= 2:
+            pinned[0] = True
+            pinned[-1] = True
+
+        points = [tuple(v.co) for v in verts]
+        curve = core.CatmullRomCurve(points, closed)
+        return {
+            "verts": verts,
+            "points": points,
+            "pinned": pinned,
+            "sides": sides,
+            "curve": curve,
+            "params": list(curve.knot_params),
+            "dominant": dominant,
+        }
+
+    def _relax_step(self, d):
+        side_coords = [[[tuple(v.co) for v in ring] for ring in rings]
+                       for rings in d["sides"]]
+        d["params"] = core.relax_chain_step(
+            d["curve"], d["params"], side_coords, d["pinned"],
+            self.side_blend, self.stiffness)
+        for vert, s, pin, orig in zip(d["verts"], d["params"], d["pinned"],
+                                      d["points"]):
+            vert.co = orig if pin else d["curve"].point_at(s)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +297,12 @@ _translations = {
         ("*", "Smoothness of the redistribution; higher values spread the "
               "influence of pinned vertices further"):
             "再配置の滑らかさ。値が大きいほど固定頂点の影響が遠くまで及ぶ",
+        ("*", "Iterations"): "イテレーション回数",
+        ("*", "Number of times the relax pass is applied"):
+            "リラックス処理を適用する回数",
+        ("*", "Lock Ends"): "両端をロック",
+        ("*", "Keep both end vertices of each open edge loop in place"):
+            "開いたエッジループの両端の頂点を固定する",
         ("*", "Skipped %d branched selection(s)"):
             "分岐のある選択を %d 個スキップしました",
         ("*", "No movable edge loops in selection"):

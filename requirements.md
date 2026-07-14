@@ -41,6 +41,10 @@ UI 文字列は英語をベースとし、`bpy.app.translations` により日本
 | Crossing edges whose faces meet at this interior angle or less are treated as shape-defining and pinned | 交差エッジの 2 面の内角がこの値以下の場合、形状を定義するエッジとみなして固定する |
 | Stiffness | 剛性 |
 | Smoothness of the redistribution; higher values spread the influence of pinned vertices further | 再配置の滑らかさ。値が大きいほど固定頂点の影響が遠くまで及ぶ |
+| Iterations | イテレーション回数 |
+| Number of times the relax pass is applied | リラックス処理を適用する回数 |
+| Lock Ends | 両端をロック |
+| Keep both end vertices of each open edge loop in place | 開いたエッジループの両端の頂点を固定する |
 | Skipped %d branched selection(s) | 分岐のある選択を %d 個スキップしました |
 | No movable edge loops in selection | 選択内に移動可能なエッジループがありません |
 
@@ -86,6 +90,8 @@ UI 文字列は英語をベースとし、`bpy.app.translations` により日本
 2. **シャープな折れ**: 2 つの隣接面の内角（平坦 = 180°）が `Face Angle Limit`（デフォルト 90°）以下
 3. **Sharp マーク**: エッジに Sharp がマークされている
 
+また、`Lock Ends` が有効な場合、開いたチェーンの両端の頂点は上記の判定によらず固定される（閉チェーンには影響しない）。
+
 ---
 
 ## 6. リサンプル位置の決定
@@ -115,11 +121,19 @@ UI 文字列は英語をベースとし、`bpy.app.translations` により日本
 
 開チェーンは三重対角系、閉チェーンは巡回三重対角系となり、それぞれ O(n) で解く。
 
-### 6.3 順序の保証
+### 6.3 複数チェーンの適用順
+
+複数のチェーンが選択されている場合、チェーンは順次適用され、後続のチェーンはリラックス済みのジオメトリからフローを外挿する。順序は、ブレンド率が高い側（`Side Blend` ≤ 0.5 ならリング数が多い側、> 0.5 なら少ない側）に見える他の選択チェーンを先に適用するよう、依存関係の安定トポロジカルソートで決定する。循環依存は選択の入力順にフォールバックする。
+
+### 6.4 イテレーション
+
+リラックスパス（外挿 → ソルバー → 再配置）は `Iterations` 回繰り返される。各イテレーションでは全チェーンが 6.3 の順序で再適用され、更新済みのジオメトリからターゲットを再計算する。近似曲線は実行ごとに 1 回だけフィットされ全イテレーションで共有されるため、繰り返してもループの形状はドリフトしない。`Factor` は最後に 1 回だけ適用される。
+
+### 6.5 順序の保証
 
 解いた後、曲線上の頂点順序が反転（追い越し）しないよう、最小間隔（元の平均間隔の 1% ）を保つ単調化パスを適用する。
 
-### 6.4 強度
+### 6.6 強度
 
 最終位置は `Factor` により元の頂点位置と線形ブレンドされる。
 
@@ -133,6 +147,8 @@ UI 文字列は英語をベースとし、`bpy.app.translations` により日本
 | Side Blend | 0.0 | 0.0 -- 1.0 | リング数が多い側 (0) ⇔ 少ない側 (1) のフローのブレンド |
 | Face Angle Limit | 90° | 0° -- 180° | 交差エッジを形状エッジと判定する 2 面の内角のしきい値 |
 | Stiffness | 1.0 | 0.0 -- 100.0 | 平滑化ソルバーの剛性（固定点の影響範囲） |
+| Iterations | 1 | 1, 5, 10, 15, 20, 25, 30 | リラックスパスの適用回数 |
+| Lock Ends | OFF | -- | 開いたエッジループの両端の頂点を固定 |
 
 ---
 

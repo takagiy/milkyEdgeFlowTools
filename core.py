@@ -402,17 +402,80 @@ def enforce_min_spacing(params, closed, total_length, min_gap):
 
 
 # ---------------------------------------------------------------------------
+# Chain application order
+# ---------------------------------------------------------------------------
+
+def order_chains(dominant_sets):
+    """Application order for multiple chains.
+
+    dominant_sets[i] is the set of chain indices visible from chain i on the
+    dominant blend side. Those chains are applied before chain i, so that
+    chain i extrapolates its flows from already-relaxed geometry. Stable
+    topological order; dependency cycles fall back to input order.
+    """
+    n = len(dominant_sets)
+    deps = [set(d) - {i} for i, d in enumerate(dominant_sets)]
+    order = []
+    placed = set()
+    while len(order) < n:
+        ready = [i for i in range(n)
+                 if i not in placed and not (deps[i] - placed)]
+        if not ready:
+            ready = [i for i in range(n) if i not in placed]
+        order.append(ready[0])
+        placed.add(ready[0])
+    return order
+
+
+# ---------------------------------------------------------------------------
 # Chain relaxation (orchestration)
 # ---------------------------------------------------------------------------
 
+def relax_chain_step(curve, params, sides, pinned, side_blend, stiffness):
+    """One relax pass over a chain on a fixed, prefitted curve.
+
+    params are the current arc-length positions of the chain vertices on
+    the curve; the returned list is the relaxed positions. Keeping the
+    curve fixed across steps means iterating can never drift the shape of
+    the loop.
+    """
+    knots = curve.knot_params
+    n = len(knots)
+    length = curve.total_length
+
+    # Original knot gaps in arc length, used to clamp runaway targets.
+    gaps = []
+    for i in range(n - 1):
+        gaps.append(knots[i + 1] - knots[i])
+    if curve.closed:
+        gaps.append(length - knots[-1])
+
+    targets = []
+    for i in range(n):
+        prev_gap = gaps[i - 1] if (i > 0 or curve.closed) else gaps[0]
+        next_gap = gaps[i] if i < len(gaps) else gaps[-1]
+        span = 2.0 * max(prev_gap, next_gap)
+        targets.append(compute_vertex_target(curve, sides[i], params[i],
+                                             side_blend, span))
+
+    deltas = solve_relaxed_params(targets, pinned, stiffness, curve.closed)
+    new_params = [params[i] + deltas[i] for i in range(n)]
+
+    seg_count = n if curve.closed else n - 1
+    min_gap = 0.01 * (length / max(seg_count, 1))
+    return enforce_min_spacing(new_params, curve.closed, length, min_gap)
+
+
 def relax_chain(points, closed, sides, pinned, side_blend=0.0,
-                stiffness=1.0, factor=1.0):
+                stiffness=1.0, factor=1.0, iterations=1):
     """Compute relaxed positions for one chain.
 
     points: ordered chain vertex positions.
     sides: per vertex, a list of crossing-flow ring polylines (see
            compute_vertex_target); empty list -> no data term.
     pinned: per vertex, True to hold the vertex in place.
+    The relax pass runs `iterations` times on the same fitted curve; factor
+    blends the final result once at the end.
     Returns the new positions (same length/order as points).
     """
     n = len(points)
@@ -420,30 +483,10 @@ def relax_chain(points, closed, sides, pinned, side_blend=0.0,
         return [tuple(map(float, p)) for p in points]
 
     curve = CatmullRomCurve(points, closed)
-    s0 = curve.knot_params
-    length = curve.total_length
-
-    # Neighbor gaps in arc length, used to clamp runaway targets.
-    gaps = []
-    for i in range(n - 1):
-        gaps.append(s0[i + 1] - s0[i])
-    if closed:
-        gaps.append(length - s0[-1])
-
-    targets = []
-    for i in range(n):
-        prev_gap = gaps[i - 1] if (i > 0 or closed) else gaps[0]
-        next_gap = gaps[i] if i < len(gaps) else gaps[-1]
-        span = 2.0 * max(prev_gap, next_gap)
-        targets.append(compute_vertex_target(curve, sides[i], s0[i],
-                                             side_blend, span))
-
-    deltas = solve_relaxed_params(targets, pinned, stiffness, closed)
-    params = [s0[i] + deltas[i] for i in range(n)]
-
-    seg_count = n if closed else n - 1
-    min_gap = 0.01 * (length / max(seg_count, 1))
-    params = enforce_min_spacing(params, closed, length, min_gap)
+    params = list(curve.knot_params)
+    for _ in range(max(1, iterations)):
+        params = relax_chain_step(curve, params, sides, pinned,
+                                  side_blend, stiffness)
 
     result = []
     for i in range(n):
