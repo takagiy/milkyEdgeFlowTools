@@ -1,6 +1,6 @@
 [project]
 name = "milky-edge-flow-tools"
-version = "0.1.0"
+version = "0.1.0" # x-release-please-version
 description = "Blender extension: relax crossing edge flows by resampling selected edge loops"
 requires-python = ">=3.11"
 

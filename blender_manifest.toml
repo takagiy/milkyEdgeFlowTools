@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "milky_edge_flow_tools"
-version = "0.1.0"
+version = "0.1.0" # x-release-please-version
 name = "milkyEdgeFlowTools"
 tagline = "Relax crossing edge flows by resampling selected edge loops"
 maintainer = "takagiy <takagiy.4dev@gmail.com>"
@@ -20,4 +20,9 @@ paths_exclude_pattern = [
   "/pyproject.toml",
   "/uv.lock",
   "/requirements.md",
+  "/README.md",
+  "/README_ja.md",
+  "/CHANGELOG.md",
+  "/version.txt",
+  "/release-please-config.json",
 ]
