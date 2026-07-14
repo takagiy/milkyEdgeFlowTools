@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "milky_edge_flow_tools"
+version = "0.1.0"
+name = "milkyEdgeFlowTools"
+tagline = "Relax crossing edge flows by resampling selected edge loops"
+maintainer = "takagiy <takagiy.4dev@gmail.com>"
+type = "add-on"
+
+blender_version_min = "5.0.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
