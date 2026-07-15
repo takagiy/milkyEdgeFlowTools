@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.5.1...v0.6.0) (2026-07-15)
+
+
+### Features
+
+* toggle between projection and arc-ratio lock correspondence ([72c63bc](https://github.com/takagiy/milkyEdgeFlowTools/commit/72c63bcc8d6c13404b02aba151d1ef9a2a04944a))
+
 ## [0.5.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.5.0...v0.5.1) (2026-07-15)
 
 
