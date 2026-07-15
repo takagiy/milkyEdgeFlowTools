@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.9.0...v0.10.0) (2026-07-15)
+
+
+### Features
+
+* recursive midpoint blending for the locked-outer base ([9e468e5](https://github.com/takagiy/milkyEdgeFlowTools/commit/9e468e5ddb93336b5ac7f1f12160c2af1f50de1c))
+
+
+### Bug Fixes
+
+* revert the end-row delta experiments ([8265ed9](https://github.com/takagiy/milkyEdgeFlowTools/commit/8265ed9e43d799b103eb7375039e44ac7c589e0f))
+
 ## [0.9.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.8.0...v0.9.0) (2026-07-15)
 
 
