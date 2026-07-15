@@ -263,6 +263,14 @@ def default_flow_count(data):
 
 def generate(data, count, bias, locked_rails=(), constraints=None):
     """Generate flows: per-flow lists of arc params, one per rail."""
+    rail_count = len(data.curves)
+    # A single locked OUTER rail: recursive midpoint blending. Confirmed
+    # flows are blended (chord-normalized), the blended chord direction is
+    # aimed from the locked vertex to find the far endpoint, and the
+    # fitted shape's intersections place the intermediate rails.
+    if len(locked_rails) == 1 and locked_rails[0] in (0, rail_count - 1):
+        return core.bisect_flows(data.curves, locked_rails[0])
+
     locked_ratios = None
     merged = dict(constraints or {})
     if locked_rails:
@@ -276,13 +284,9 @@ def generate(data, count, bias, locked_rails=(), constraints=None):
         for rj in locked_rails:
             for i, s in enumerate(data.curves[rj].knot_params):
                 merged.setdefault((i, rj), s)
-        # Flow endpoints on the outer rails copy the locked vertices'
-        # normalized arc ratios (averaged over the locked chains).
-        # Closest-point projection was tried here and retired: combined
-        # with the default end locks and the constraint propagation, the
-        # plain ratios produced the better strips in practice. Explicit
-        # user constraints (drags) take precedence.
-        for side in (0, len(data.curves) - 1):
+        # Fallback (multiple locks or a locked intermediate rail): copy
+        # the locked vertices' normalized arc ratios onto the outer rails.
+        for side in (0, rail_count - 1):
             if side in locked_rails:
                 continue
             side_length = data.curves[side].total_length

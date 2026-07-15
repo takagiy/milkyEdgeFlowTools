@@ -67,6 +67,7 @@ from core import (
     enforce_min_spacing,
     flow_direction,
     generate_flows,
+    bisect_flows,
     order_chains,
     order_rails,
     propagate_deltas,
@@ -145,6 +146,13 @@ class TestCatmullRomCurve(unittest.TestCase):
         curve = CatmullRomCurve(pts, closed=False)
         for a, b in zip(curve.knot_params, curve.knot_params[1:]):
             self.assertLess(a, b)
+
+    def test_closest_param_to_polyline(self):
+        curve, _ = straight_curve()
+        s, dist = curve.closest_param_to_polyline([(3.0, 2.0, 0.0),
+                                                   (3.0, -2.0, 0.0)])
+        self.assertAlmostEqual(s, 3.0, delta=0.05)
+        self.assertLess(dist, 0.05)
 
     def test_closest_param_to_ray_hit(self):
         curve, _ = straight_curve()
@@ -443,6 +451,45 @@ class TestPropagation(unittest.TestCase):
         self.assertAlmostEqual(out[1][0], 2.5, delta=1e-9)
         for i in (0, 2, 3):
             self.assertAlmostEqual(out[i][0], base[i][0], delta=1e-9)
+
+
+class TestBisectFlows(unittest.TestCase):
+    def test_uniform_parallel_rails_match_knots(self):
+        rails = straight_rails(3)  # x = 0,1,2; y in [0,4]; uniform knots
+        flows = bisect_flows(rails, locked_index=0)
+        self.assertEqual(len(flows), 5)
+        for i, flow in enumerate(flows):
+            for rj, s in enumerate(flow):
+                self.assertAlmostEqual(s, float(i), delta=0.05)
+
+    def test_fan_aims_blended_chord_direction(self):
+        locked = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                                 closed=False)          # length 4
+        far = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(9)],
+                              closed=False)             # length 8
+        flows = bisect_flows([locked, far], locked_index=0)
+        # Middle row: blended direction of the two end chords, aimed from
+        # (0, 2), lands at y ~ 3.24 on the far rail (ratio copy would say
+        # 4.0).
+        self.assertAlmostEqual(flows[2][1], 3.24, delta=0.15)
+        self.assertAlmostEqual(flows[1][1], 1.57, delta=0.15)
+        self.assertAlmostEqual(flows[3][1], 5.19, delta=0.20)
+        for a, b in zip(flows, flows[1:]):
+            self.assertGreater(b[1], a[1])
+
+    def test_shape_blend_reaches_middle_rail(self):
+        locked = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                                 closed=False)
+        middle = CatmullRomCurve([(1.0, -0.5, 0.0), (1.0, 0.5, 0.0),
+                                  (1.0, 1.5, 0.0), (1.0, 2.5, 0.0),
+                                  (1.0, 4.0, 0.0)], closed=False)
+        far = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(5)],
+                              closed=False)
+        flows = bisect_flows([locked, middle, far], locked_index=0)
+        # Row 0 bows down to (1, -0.5); row 4 is straight. The middle row
+        # blends half the bow: fitted point (1, 1.75) -> middle-rail arc
+        # 1.75 - (-0.5) = 2.25.
+        self.assertAlmostEqual(flows[2][1], 2.25, delta=0.12)
 
 
 class TestGenerateFlows(unittest.TestCase):

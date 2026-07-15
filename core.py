@@ -58,6 +58,73 @@ def _lerp(a, b, t):
             a[2] + (b[2] - a[2]) * t)
 
 
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _rotate_toward(vector, from_dir, to_dir):
+    """Rotate `vector` by the minimal rotation taking from_dir onto to_dir."""
+    f = _normalize(from_dir)
+    t = _normalize(to_dir)
+    if f is None or t is None:
+        return vector
+    axis = _cross(f, t)
+    sin_a = _length(axis)
+    cos_a = max(-1.0, min(1.0, _dot(f, t)))
+    if sin_a < 1.0e-12:
+        if cos_a > 0.0:
+            return vector
+        reference = (1.0, 0.0, 0.0) if abs(f[0]) < 0.9 else (0.0, 1.0, 0.0)
+        axis = _normalize(_cross(f, reference))
+        d = _dot(axis, vector)
+        return (2.0 * d * axis[0] - vector[0],
+                2.0 * d * axis[1] - vector[1],
+                2.0 * d * axis[2] - vector[2])
+    axis = _mul(axis, 1.0 / sin_a)
+    kv = _cross(axis, vector)
+    kkv = _cross(axis, kv)
+    return _add(_add(vector, _mul(kv, sin_a)), _mul(kkv, 1.0 - cos_a))
+
+
+def _closest_segment_segment(p1, q1, p2, q2):
+    """Closest points between segments [p1,q1] and [p2,q2].
+
+    Returns (distance, param on the first segment in [0, 1]).
+    """
+    d1 = _sub(q1, p1)
+    d2 = _sub(q2, p2)
+    r = _sub(p1, p2)
+    a = _dot(d1, d1)
+    e = _dot(d2, d2)
+    f = _dot(d2, r)
+
+    def clamp01(x):
+        return min(max(x, 0.0), 1.0)
+
+    if a < 1.0e-18 and e < 1.0e-18:
+        return math.dist(p1, p2), 0.0
+    if a < 1.0e-18:
+        s, t = 0.0, clamp01(f / e)
+    else:
+        c = _dot(d1, r)
+        if e < 1.0e-18:
+            s, t = clamp01(-c / a), 0.0
+        else:
+            b = _dot(d1, d2)
+            denom = a * e - b * b
+            s = clamp01((b * f - c * e) / denom) if denom > 1.0e-18 else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                s, t = clamp01(-c / a), 0.0
+            elif t > 1.0:
+                s, t = clamp01((b - c) / a), 1.0
+    pt1 = _add(p1, _mul(d1, s))
+    pt2 = _add(p2, _mul(d2, t))
+    return math.dist(pt1, pt2), s
+
+
 # ---------------------------------------------------------------------------
 # Chain decomposition
 # ---------------------------------------------------------------------------
@@ -220,6 +287,23 @@ class CatmullRomCurve:
             if dist < best_dist:
                 best_dist = dist
                 best_s = cum[j] + u * (cum[j + 1] - cum[j])
+        return best_s, best_dist
+
+    def closest_param_to_polyline(self, points):
+        """Arc-length param of the curve point closest to a polyline.
+
+        Returns (s, distance).
+        """
+        samples, cum = self._samples, self._cum
+        best_s, best_dist = 0.0, math.inf
+        for j in range(len(samples) - 1):
+            a, b = samples[j], samples[j + 1]
+            for k in range(len(points) - 1):
+                dist, u = _closest_segment_segment(a, b, points[k],
+                                                   points[k + 1])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_s = cum[j] + u * (cum[j + 1] - cum[j])
         return best_s, best_dist
 
     def closest_param_to_ray(self, origin, direction):
@@ -631,6 +715,113 @@ def propagate_flow_constraints(base_flows, constrained_rows, influence):
         for i in range(flow_count):
             result[i][rj] = base_flows[i][rj] + deltas[i]
     return result
+
+
+def blend_flow_curve(points_a, points_b, weight, start, end, samples=32):
+    """Blend two flow polylines and fit the result between start and end.
+
+    Each input is chord-normalized: its deviation from its own chord is
+    minimally rotated onto the target chord (start -> end) and scaled by
+    the chord-length ratio. The deviations are blended linearly by
+    `weight` and re-anchored on the target chord. Returns a polyline of
+    samples + 1 points running from start to end.
+    """
+    curve_a = CatmullRomCurve(points_a, closed=False)
+    curve_b = CatmullRomCurve(points_b, closed=False)
+    chord = _sub(end, start)
+    chord_len = _length(chord)
+    result = []
+    for k in range(samples + 1):
+        t = k / samples
+        blended = (0.0, 0.0, 0.0)
+        for curve, pts, w in ((curve_a, points_a, 1.0 - weight),
+                              (curve_b, points_b, weight)):
+            src_start = tuple(map(float, pts[0]))
+            src_chord = _sub(tuple(map(float, pts[-1])), src_start)
+            src_len = _length(src_chord)
+            if src_len < 1.0e-12 or chord_len < 1.0e-12 or w == 0.0:
+                continue
+            point = curve.point_at(curve.total_length * t)
+            deviation = _sub(point, _add(src_start, _mul(src_chord, t)))
+            deviation = _rotate_toward(deviation, src_chord, chord)
+            deviation = _mul(deviation, chord_len / src_len)
+            blended = _add(blended, _mul(deviation, w))
+        result.append(_add(_add(start, _mul(chord, t)), blended))
+    return result
+
+
+def bisect_flows(curves, locked_index, samples=32):
+    """Flow params by recursive midpoint blending (one outer rail locked).
+
+    The end rows sit on the rail endpoints. For the row halfway (by
+    index) between two resolved rows: blend the two resolved flows
+    (chord-normalized, weighted by the locked chain's arc position), aim
+    the blended chord direction from the locked vertex to find the far
+    endpoint on the opposite outer rail, fit the blended shape between
+    those two points, and place the intermediate-rail vertices at the
+    fitted curve's closest points. Recurses until every row is resolved.
+    Returns the [flow][rail] arc-param matrix.
+    """
+    rail_count = len(curves)
+    far_index = rail_count - 1 if locked_index == 0 else 0
+    locked_curve = curves[locked_index]
+    far_curve = curves[far_index]
+    knots = locked_curve.knot_params
+    n = len(knots)
+    order = (list(range(rail_count)) if locked_index == 0
+             else list(range(rail_count - 1, -1, -1)))
+
+    params = [[0.0] * rail_count for _ in range(n)]
+    for rj in range(rail_count):
+        params[n - 1][rj] = curves[rj].total_length
+
+    def row_points(i):
+        return [curves[rj].point_at(params[i][rj]) for rj in order]
+
+    def resolve(lo, hi):
+        if hi - lo < 2:
+            return
+        mid = (lo + hi) // 2
+        span = knots[hi] - knots[lo]
+        weight = (knots[mid] - knots[lo]) / span if span > 1.0e-12 else 0.5
+        pts_lo = row_points(lo)
+        pts_hi = row_points(hi)
+        start = locked_curve.point_at(knots[mid])
+
+        dir_lo = _normalize(_sub(pts_lo[-1], pts_lo[0]))
+        dir_hi = _normalize(_sub(pts_hi[-1], pts_hi[0]))
+        if dir_lo is not None and dir_hi is not None:
+            direction = _normalize(_lerp(dir_lo, dir_hi, weight))
+        else:
+            direction = dir_lo if dir_lo is not None else dir_hi
+
+        far_lo = params[lo][far_index]
+        far_hi = params[hi][far_index]
+        if direction is not None:
+            s_far, _dist = far_curve.closest_param_to_ray(start, direction)
+        else:
+            s_far = far_lo + weight * (far_hi - far_lo)
+        margin = 1.0e-3 * max(far_hi - far_lo, 1.0e-9)
+        s_far = min(max(s_far, far_lo + margin), far_hi - margin)
+        end = far_curve.point_at(s_far)
+
+        fitted = blend_flow_curve(pts_lo, pts_hi, weight, start, end,
+                                  samples)
+        params[mid][locked_index] = knots[mid]
+        params[mid][far_index] = s_far
+        for rj in range(rail_count):
+            if rj in (locked_index, far_index):
+                continue
+            s_j, _dist = curves[rj].closest_param_to_polyline(fitted)
+            lo_j = params[lo][rj]
+            hi_j = params[hi][rj]
+            gap = 1.0e-3 * max(hi_j - lo_j, 1.0e-9)
+            params[mid][rj] = min(max(s_j, lo_j + gap), hi_j - gap)
+        resolve(lo, mid)
+        resolve(mid, hi)
+
+    resolve(0, n - 1)
+    return params
 
 
 def smooth_flow_on_rails(rails, params, pinned, iterations=10):
