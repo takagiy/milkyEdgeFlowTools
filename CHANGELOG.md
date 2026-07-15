@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.7.0...v0.7.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* flood-fill across intermediate rails and absorb full rail spans ([3b67ce2](https://github.com/takagiy/milkyEdgeFlowTools/commit/3b67ce260ac043f490e12b073429ec0e2508abe1))
+
 ## [0.7.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.6.0...v0.7.0) (2026-07-15)
 
 
