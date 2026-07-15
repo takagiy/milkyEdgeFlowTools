@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.6.0...v0.7.0) (2026-07-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt arc-ratio correspondence for locked chains
+
+### Features
+
+* adopt arc-ratio correspondence for locked chains ([9297966](https://github.com/takagiy/milkyEdgeFlowTools/commit/9297966c6301ccaa9b936c36bbc49eb2a14edbc8))
+
 ## [0.6.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.5.1...v0.6.0) (2026-07-15)
 
 
