@@ -283,7 +283,7 @@ def generate(data, count, bias, locked_rails=(), constraints=None):
                 curve = data.curves[rj]
                 points = [curve.point_at(s) for s in curve.knot_params]
                 projections.append(core.opposite_shore_params(
-                    points, data.curves[side]))
+                    points, data.curves[side], clamp_ends=False))
             for i in range(flow_total):
                 merged.setdefault(
                     (i, side),
@@ -291,6 +291,63 @@ def generate(data, count, bias, locked_rails=(), constraints=None):
     return core.generate_flows(data.curves, count, bias=bias,
                                locked_ratios=locked_ratios,
                                constraints=merged)
+
+
+def default_end_constraints(data, flow_count):
+    """Per-vertex locks holding the end rows on the rail endpoints.
+
+    Applied when entering the adjustment mode (and re-applied on count
+    changes); the user can unlock them per vertex to let the strip ends
+    regenerate too.
+    """
+    constraints = {}
+    for rj, curve in enumerate(data.curves):
+        constraints[(0, rj)] = 0.0
+        constraints[(flow_count - 1, rj)] = curve.total_length
+    return constraints
+
+
+def compose_flows(data, count, bias, locked_rails=(), constraints=None,
+                  influence=2.0):
+    """Base generation plus decaying propagation of vertex constraints.
+
+    The base is generated without vertex constraints; each constrained
+    flow is then re-smoothed through its constraints, and per rail the
+    constrained rows' displacements are propagated to the free rows with
+    a falloff of roughly `influence` flows.
+    """
+    base = generate(data, count, bias, locked_rails)
+    constraints = constraints or {}
+    rail_count = len(data.curves)
+
+    rows = {}
+    for (i, rj), s in constraints.items():
+        if 0 <= i < len(base) and 0 <= rj < rail_count:
+            rows.setdefault(i, {})[rj] = s
+    constrained_rows = {}
+    for i, row_constraints in rows.items():
+        params = list(base[i])
+        pinned = [False] * rail_count
+        pinned[0] = pinned[-1] = True
+        for rj in locked_rails:
+            pinned[rj] = True
+        for rj, s in row_constraints.items():
+            params[rj] = s
+            pinned[rj] = True
+        constrained_rows[i] = core.smooth_flow_on_rails(
+            data.curves, params, pinned)
+
+    flows = core.propagate_flow_constraints(base, constrained_rows,
+                                            influence)
+    # Keep each rail's rows ordered and on the curve.
+    for rj, curve in enumerate(data.curves):
+        length = curve.total_length
+        column = [flows[i][rj] for i in range(len(flows))]
+        gap = 1.0e-3 * (length / max(1, len(flows) - 1))
+        column = core.enforce_min_spacing(column, False, length, gap)
+        for i in range(len(flows)):
+            flows[i][rj] = min(max(column[i], 0.0), length)
+    return flows
 
 
 # ---------------------------------------------------------------------------
@@ -418,25 +475,47 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
     bmesh.ops.delete(bm, geom=[bm.verts[vi] for vi in doomed],
                      context='VERTS')
 
-    # New grid vertices. Endpoint rows reuse the preserved endpoint verts;
-    # locked rails reuse all their original verts.
+    # New grid vertices. End rows sitting on the rail endpoints reuse the
+    # preserved endpoint verts; locked rails reuse all their original
+    # verts; everything else is created on the rail curve.
     grid = [[None] * rail_count for _ in range(flow_count)]
     new_rail_params = [[] for _ in range(rail_count)]
     for rj in range(rail_count):
         curve = data.curves[rj]
+        eps = 1.0e-6 * max(curve.total_length, 1.0e-9)
         for i in range(flow_count):
             if rj in locked_rails:
                 grid[i][rj] = locked_rail_verts[rj][i]
                 new_rail_params[rj].append(curve.knot_params[i])
-            elif i == 0:
+            elif i == 0 and flows[i][rj] <= eps:
                 grid[i][rj] = rail_end_verts[rj][0]
                 new_rail_params[rj].append(0.0)
-            elif i == flow_count - 1:
+            elif (i == flow_count - 1
+                    and flows[i][rj] >= curve.total_length - eps):
                 grid[i][rj] = rail_end_verts[rj][1]
                 new_rail_params[rj].append(curve.total_length)
             else:
                 grid[i][rj] = bm.verts.new(curve.point_at(flows[i][rj]))
                 new_rail_params[rj].append(flows[i][rj])
+
+    # Rail vertex sequences including the preserved endpoint verts when an
+    # end row moved inward; used for outside-face mapping and selection.
+    rail_seq_verts = []
+    rail_seq_params = []
+    for rj in range(rail_count):
+        verts_seq = []
+        params_seq = []
+        if grid[0][rj] is not rail_end_verts[rj][0]:
+            verts_seq.append(rail_end_verts[rj][0])
+            params_seq.append(0.0)
+        for i in range(flow_count):
+            verts_seq.append(grid[i][rj])
+            params_seq.append(new_rail_params[rj][i])
+        if grid[flow_count - 1][rj] is not rail_end_verts[rj][1]:
+            verts_seq.append(rail_end_verts[rj][1])
+            params_seq.append(data.curves[rj].total_length)
+        rail_seq_verts.append(verts_seq)
+        rail_seq_params.append(params_seq)
 
     new_faces = []
 
@@ -457,18 +536,34 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
         face.smooth = smooth
         new_faces.append(face)
 
-    # Strip faces: interior rows are quads; the two extreme rows absorb
-    # the kept end-path verts as n-gons.
+    # Strip faces. Extreme rows still sitting on the endpoints absorb the
+    # kept end-path verts as n-gons; end rows that moved inward instead
+    # get a separate band n-gon connecting them back to the preserved end
+    # boundary (endpoint verts + end path).
+    def row_on_endpoints(row, end, rj):
+        return (grid[row][rj] is rail_end_verts[rj][end]
+                and grid[row][rj + 1] is rail_end_verts[rj + 1][end])
+
     for i in range(flow_count - 1):
         for rj in range(rail_count - 1):
             verts = [grid[i][rj]]
-            if i == 0:
+            if i == 0 and row_on_endpoints(0, 0, rj):
                 verts.extend(segment_verts[0][rj])
             verts.append(grid[i][rj + 1])
             verts.append(grid[i + 1][rj + 1])
-            if i + 1 == flow_count - 1:
+            if (i + 1 == flow_count - 1
+                    and row_on_endpoints(flow_count - 1, 1, rj)):
                 verts.extend(reversed(segment_verts[1][rj]))
             verts.append(grid[i + 1][rj])
+            make_face(verts, data.material_index, data.use_smooth)
+
+    for end, row in ((0, 0), (1, flow_count - 1)):
+        for rj in range(rail_count - 1):
+            if row_on_endpoints(row, end, rj):
+                continue
+            verts = ([rail_end_verts[rj][end]] + segment_verts[end][rj]
+                     + [rail_end_verts[rj + 1][end],
+                        grid[row][rj + 1], grid[row][rj]])
             make_face(verts, data.material_index, data.use_smooth)
 
     # Rebuild the tokenized outside faces: rail runs are replaced by the
@@ -490,8 +585,8 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
                 idx += 1
             reverse = len(run) > 1 and run[0] > run[-1]
             params = list(reversed(run)) if reverse else run
-            mapped = [grid[i][rj] for i in
-                      _monotone_nearest(params, new_rail_params[rj])]
+            mapped = [rail_seq_verts[rj][i] for i in
+                      _monotone_nearest(params, rail_seq_params[rj])]
             if reverse:
                 mapped.reverse()
             verts.extend(mapped)
@@ -507,8 +602,8 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
     for face in bm.faces:
         face.select = False
     for rj in range(rail_count):
-        for i in range(flow_count - 1):
-            a, b = grid[i][rj], grid[i + 1][rj]
+        seq = rail_seq_verts[rj]
+        for a, b in zip(seq, seq[1:]):
             edge = _edge_between(a, b)
             if edge:
                 edge.select = True
@@ -517,15 +612,22 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
 
 
 def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
-                     constraints=None):
-    """Full UI-independent pipeline on an edit-mesh object."""
+                     constraints=None, influence=2.0):
+    """Full UI-independent pipeline on an edit-mesh object.
+
+    The end rows get their default endpoint locks; explicit constraints
+    override them.
+    """
     bm = bmesh.from_edit_mesh(obj.data)
     data = analyze_strip(bm)
     if locked_rails:
         count = len(data.rails[locked_rails[0]])
     if count is None:
         count = default_flow_count(data)
-    flows = generate(data, count, bias, locked_rails, constraints)
+    merged = default_end_constraints(data, count)
+    merged.update(constraints or {})
+    flows = compose_flows(data, count, bias, locked_rails, merged,
+                          influence)
     apply_regeneration(bm, data, flows, locked_rails)
     bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
     return len(flows)
@@ -556,6 +658,7 @@ class _Session:
         self.data = data
         self.count = default_flow_count(data)
         self.bias = 0.5
+        self.influence = 2.0
         self.locked = set()
         self.constraints = {}
         self.flows = []
@@ -594,26 +697,16 @@ def _refresh_caches(session):
         session.flow_lines.append(line)
 
 
+def _reset_constraints(session):
+    session.constraints = default_end_constraints(session.data,
+                                                  session.count)
+
+
 def _regenerate(session):
-    session.flows = generate(session.data, session.count, session.bias,
-                             tuple(session.locked), session.constraints)
+    session.flows = compose_flows(session.data, session.count, session.bias,
+                                  tuple(session.locked), session.constraints,
+                                  session.influence)
     session.count = len(session.flows)
-    _refresh_caches(session)
-
-
-def _refresh_flow(session, flow_i):
-    curves = session.data.curves
-    params = list(session.flows[flow_i])
-    pinned = [False] * len(curves)
-    pinned[0] = pinned[-1] = True
-    for (fi, rj), s in session.constraints.items():
-        if fi == flow_i:
-            params[rj] = s
-            pinned[rj] = True
-    for rj in session.locked:
-        params[rj] = curves[rj].knot_params[flow_i]
-        pinned[rj] = True
-    session.flows[flow_i] = core.smooth_flow_on_rails(curves, params, pinned)
     _refresh_caches(session)
 
 
@@ -625,7 +718,7 @@ def _set_count(session, count):
     if count == session.count:
         return
     session.count = count
-    session.constraints.clear()
+    _reset_constraints(session)
     session.message = ""
     _regenerate(session)
     _sync_settings(session)
@@ -635,6 +728,7 @@ def _toggle_lock(session, rail_j):
     if rail_j in session.locked:
         session.locked.discard(rail_j)
         session.message = ""
+        _reset_constraints(session)
         _regenerate(session)
         _sync_settings(session)
         return
@@ -646,8 +740,8 @@ def _toggle_lock(session, rail_j):
                 "(%d vs %d)" % (len(session.data.rails[other]), rail_len))
             return
     session.locked.add(rail_j)
-    session.constraints.clear()
     session.count = rail_len
+    _reset_constraints(session)
     session.message = ""
     _regenerate(session)
     _sync_settings(session)
@@ -660,6 +754,7 @@ def _sync_settings(session):
         settings = bpy.context.window_manager.milky_regen
         settings.flow_count = session.count
         settings.curvature_bias = session.bias
+        settings.influence = session.influence
     finally:
         _suppress_updates = False
 
@@ -672,6 +767,9 @@ def _settings_changed(_self, _context):
         _set_count(_session, settings.flow_count)
     if abs(settings.curvature_bias - _session.bias) > 1.0e-6:
         _session.bias = settings.curvature_bias
+        _regenerate(_session)
+    if abs(settings.influence - _session.influence) > 1.0e-6:
+        _session.influence = settings.influence
         _regenerate(_session)
 
 
@@ -847,6 +945,13 @@ class MilkyRegenSettings(bpy.types.PropertyGroup):
         min=0.0, max=1.0, default=0.5, subtype='FACTOR',
         update=_settings_changed,
     )
+    influence: bpy.props.FloatProperty(
+        name="Influence",
+        description=("How many neighboring flows a locked or dragged "
+                     "vertex influences (0 = constrained flows only)"),
+        min=0.0, max=10.0, default=2.0,
+        update=_settings_changed,
+    )
 
 
 class MESH_OT_milky_regen_request(bpy.types.Operator):
@@ -881,6 +986,7 @@ class VIEW3D_PT_milky_regen(bpy.types.Panel):
         col.enabled = not _session.locked
         col.prop(settings, "flow_count")
         col.prop(settings, "curvature_bias")
+        layout.prop(settings, "influence")
         if _session.message:
             layout.label(text=_session.message, icon='ERROR')
         row = layout.row()
@@ -910,6 +1016,12 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
                      "regions (0 = uniform)"),
         min=0.0, max=1.0, default=0.5, subtype='FACTOR',
     )
+    influence: bpy.props.FloatProperty(
+        name="Influence",
+        description=("How many neighboring flows a locked or dragged "
+                     "vertex influences (0 = constrained flows only)"),
+        min=0.0, max=10.0, default=2.0,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -922,7 +1034,8 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
         obj = context.active_object
         try:
             count = self.flow_count if self.flow_count >= 2 else None
-            run_regeneration(obj, count, self.curvature_bias)
+            run_regeneration(obj, count, self.curvature_bias,
+                             influence=self.influence)
         except StripError as exc:
             self.report({'ERROR'},
                         bpy.app.translations.pgettext_rpt(exc.message))
@@ -944,9 +1057,11 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
 
         session = _Session(obj, data)
         session.bias = self.curvature_bias
+        session.influence = self.influence
         if self.flow_count >= 2:
             session.count = self.flow_count
         _session = session
+        _reset_constraints(session)
         _regenerate(session)
         _sync_settings(session)
 
@@ -995,8 +1110,15 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
         if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             if event.shift:
                 handle = _pick_handle(context, event)
-                if handle is not None and handle in session.constraints:
-                    del session.constraints[handle]
+                if handle is not None:
+                    flow_i, rail_j = handle
+                    if rail_j in session.locked:
+                        return {'RUNNING_MODAL'}
+                    if handle in session.constraints:
+                        del session.constraints[handle]
+                    else:
+                        session.constraints[handle] = \
+                            session.flows[flow_i][rail_j]
                     session.message = ""
                     _regenerate(session)
                     return {'RUNNING_MODAL'}
@@ -1007,8 +1129,7 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
             handle = _pick_handle(context, event)
             if handle is not None:
                 flow_i, rail_j = handle
-                if (0 < flow_i < session.count - 1
-                        and rail_j not in session.locked):
+                if rail_j not in session.locked:
                     session.drag = handle
                 return {'RUNNING_MODAL'}
             return {'RUNNING_MODAL'}
@@ -1018,7 +1139,7 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
             param = _drag_param(context, event, rail_j)
             if param is not None:
                 session.constraints[(flow_i, rail_j)] = param
-                _refresh_flow(session, flow_i)
+                _regenerate(session)
             return {'RUNNING_MODAL'}
 
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':

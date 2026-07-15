@@ -564,24 +564,26 @@ def common_sample_ratios(curves, count, bias, resolution=128):
     return ratios
 
 
-def opposite_shore_params(points, curve):
+def opposite_shore_params(points, curve, clamp_ends=True):
     """Arc params on `curve` geometrically opposite the given points.
 
     Used when a locked chain dictates the flows: normalized arc ratios of
     a strongly curved chain skew away from the visual correspondence (its
     curvature inflates the denominator), so each locked vertex is instead
-    projected to its closest point on the rail. The first and last params
-    are forced onto the rail endpoints (the end flows connect endpoints by
-    construction) and the sequence is kept strictly increasing.
+    projected to its closest point on the rail. With clamp_ends the first
+    and last params are forced onto the rail endpoints; without it the raw
+    projections are kept (the end rows are then held by their default
+    locks instead). The sequence is kept strictly increasing either way.
     """
     length = curve.total_length
     params = [curve.closest_param_to_point(tuple(p))[0] for p in points]
     n = len(params)
     if n == 0:
         return []
-    params[0] = 0.0
-    if n > 1:
-        params[-1] = length
+    if clamp_ends:
+        params[0] = 0.0
+        if n > 1:
+            params[-1] = length
     gap = 1.0e-3 * (length / max(1, n - 1))
     for i in range(1, n - 1):
         params[i] = max(params[i], params[i - 1] + gap)
@@ -589,6 +591,75 @@ def opposite_shore_params(points, curve):
         if params[i] > params[i + 1] - gap:
             params[i] = params[i + 1] - gap
     return params
+
+
+def propagate_deltas(count, pinned, influence):
+    """Displacements along a row of vertices with decaying influence.
+
+    pinned maps index -> imposed displacement. Free entries minimize
+    sum(delta_i^2) + lam * sum((delta_{i+1} - delta_i)^2) with
+    lam = influence^2, so a constraint's influence decays over roughly
+    `influence` neighbors; influence 0 leaves free entries untouched.
+    """
+    deltas = [0.0] * count
+    for i, value in pinned.items():
+        deltas[i] = value
+    lam = max(0.0, influence) ** 2
+    if lam <= _EPSILON or count < 2 or not pinned:
+        return deltas
+
+    i = 0
+    while i < count:
+        if i in pinned:
+            i += 1
+            continue
+        j = i
+        while j < count and j not in pinned:
+            j += 1
+        run = j - i
+        sub = [0.0] * run
+        diag = [0.0] * run
+        sup = [0.0] * run
+        rhs = [0.0] * run
+        for k in range(run):
+            idx = i + k
+            degree = (1 if idx > 0 else 0) + (1 if idx < count - 1 else 0)
+            diag[k] = 1.0 + lam * degree
+            if k > 0:
+                sub[k] = -lam
+            if k < run - 1:
+                sup[k] = -lam
+        if i > 0:
+            rhs[0] += lam * deltas[i - 1]
+        if j < count:
+            rhs[run - 1] += lam * deltas[j]
+        for k, value in enumerate(_thomas(sub, diag, sup, rhs)):
+            deltas[i + k] = value
+        i = j
+    return deltas
+
+
+def propagate_flow_constraints(base_flows, constrained_rows, influence):
+    """Blend constrained flows into their neighbors with a falloff.
+
+    base_flows[i][j] are the unconstrained per-rail params of flow i;
+    constrained_rows maps a flow index to its resolved params (the flow
+    re-smoothed through its constraints). Per rail, the constrained rows'
+    displacements from base are propagated to the free rows with
+    propagate_deltas. Returns the composed params grid.
+    """
+    result = [list(flow) for flow in base_flows]
+    if not constrained_rows or not base_flows:
+        return result
+    flow_count = len(base_flows)
+    rail_count = len(base_flows[0])
+    for rj in range(rail_count):
+        pinned = {i: constrained_rows[i][rj] - base_flows[i][rj]
+                  for i in constrained_rows}
+        deltas = propagate_deltas(flow_count, pinned, influence)
+        for i in range(flow_count):
+            result[i][rj] = base_flows[i][rj] + deltas[i]
+    return result
 
 
 def smooth_flow_on_rails(rails, params, pinned, iterations=10):

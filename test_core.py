@@ -41,6 +41,12 @@ Integration (relax_chain):
   [x] relax_chain_step on a fixed curve matches relax_chain
   [x] relax_chain_step is idempotent once converged
   [x] extra iterations do not change an already-converged result
+Constraint propagation (v0.5.0):
+  [x] no pins -> zero deltas; influence 0 -> pinned rows only
+  [x] a pinned displacement decays monotonically into neighbors
+  [x] higher influence spreads further
+  [x] propagate_flow_constraints displaces neighboring flows per rail
+  [x] opposite_shore_params can leave the ends unclamped
 Regeneration core (M1):
   [x] order_rails orders a path from unordered adjacency; rejects branches
   [x] common_sample_ratios: straight rails -> uniform; bias 0 -> uniform
@@ -65,6 +71,8 @@ from core import (
     opposite_shore_params,
     order_chains,
     order_rails,
+    propagate_deltas,
+    propagate_flow_constraints,
     relax_chain,
     relax_chain_step,
     smooth_flow_on_rails,
@@ -399,7 +407,57 @@ class TestFlowSmoothing(unittest.TestCase):
         self.assertAlmostEqual(params[1], 0.0, delta=1e-9)
 
 
+class TestPropagation(unittest.TestCase):
+    def test_no_pins_and_zero_influence(self):
+        self.assertEqual(propagate_deltas(5, {}, 2.0), [0.0] * 5)
+        out = propagate_deltas(5, {2: 1.0}, 0.0)
+        self.assertEqual(out[2], 1.0)
+        for i in (0, 1, 3, 4):
+            self.assertAlmostEqual(out[i], 0.0, delta=1e-9)
+
+    def test_decays_monotonically(self):
+        out = propagate_deltas(7, {3: 1.0}, 2.0)
+        self.assertAlmostEqual(out[3], 1.0, delta=1e-9)
+        self.assertGreater(out[2], out[1])
+        self.assertGreater(out[1], out[0])
+        self.assertGreater(out[0], -1e-9)
+        self.assertAlmostEqual(out[2], out[4], delta=1e-9)  # symmetry
+
+    def test_higher_influence_spreads_further(self):
+        near = propagate_deltas(9, {4: 1.0}, 1.0)
+        far = propagate_deltas(9, {4: 1.0}, 4.0)
+        self.assertGreater(far[1], near[1])
+        self.assertGreater(far[6], near[6])
+
+    def test_flow_constraints_displace_neighbors(self):
+        base = [[float(i), float(i)] for i in range(6)]  # 6 flows, 2 rails
+        moved = {1: [2.0, 2.0]}  # flow 1 dragged from 1.0 to 2.0
+        out = propagate_flow_constraints(base, moved, influence=2.0)
+        self.assertAlmostEqual(out[1][0], 2.0, delta=1e-9)
+        self.assertGreater(out[2][0], base[2][0])   # neighbor pulled along
+        self.assertGreater(out[2][0] - base[2][0],
+                           out[4][0] - base[4][0])  # decaying
+        self.assertAlmostEqual(out[5][0], 5.0, delta=0.35)
+
+    def test_zero_influence_keeps_others(self):
+        base = [[float(i)] for i in range(4)]
+        out = propagate_flow_constraints(base, {1: [2.5]}, influence=0.0)
+        self.assertAlmostEqual(out[1][0], 2.5, delta=1e-9)
+        for i in (0, 2, 3):
+            self.assertAlmostEqual(out[i][0], base[i][0], delta=1e-9)
+
+
 class TestOppositeShore(unittest.TestCase):
+    def test_unclamped_ends(self):
+        rail = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                               closed=False)
+        locked = [(2.0, 0.5, 0.0), (2.0, 2.0, 0.0), (2.0, 3.0, 0.0)]
+        clamped = opposite_shore_params(locked, rail)
+        self.assertAlmostEqual(clamped[0], 0.0, delta=1e-9)
+        raw = opposite_shore_params(locked, rail, clamp_ends=False)
+        self.assertAlmostEqual(raw[0], 0.5, delta=0.05)
+        self.assertAlmostEqual(raw[-1], 3.0, delta=0.05)
+
     def test_projection_beats_arc_ratios(self):
         # A locked chain that detours sideways inflates its arc length;
         # ratio copying would land vertex 1 at ~0.67 on the rail, but the

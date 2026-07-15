@@ -221,6 +221,30 @@ def test_regenerate_locked_rail():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
+def test_regenerate_moved_end_row():
+    """Unlocked (constrained inward) end rows create the band n-gon that
+    reconnects the preserved end boundary; propagation off for exactness."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+    count = milky_regen.run_regeneration(
+        obj, count=3, bias=0.0,
+        constraints={(0, 0): 1.0, (0, 1): 1.0}, influence=0.0)
+    assert count == 3, f"flow count {count}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    # Rails now hold endpoint + moved row + middle + far endpoint.
+    for x in (1.0, 4.0):
+        ys = sorted(round(v.co.y, 3) for v in bm.verts
+                    if abs(v.co.x - x) < 1e-4)
+        assert ys == [0.0, 1.0, 2.0, 4.0], (x, ys)
+    assert len(bm.verts) == 22, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 11, f"face count {len(bm.faces)}"
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
 def test_regenerate_rejects_single_chain():
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -277,6 +301,7 @@ def main():
     test_regenerate_basic()
     test_regenerate_same_density()
     test_regenerate_locked_rail()
+    test_regenerate_moved_end_row()
     test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()

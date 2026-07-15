@@ -13,10 +13,12 @@ each vertex to where the crossing flows naturally want to arrive.
 (rails), and the strip between the outermost ones is deleted and rebuilt with
 freshly generated crossing flows placed on the rails' fitted curves. An
 interactive adjustment mode previews the result: Shift+click a rail to lock
-its vertices (this also fixes the flow count), drag flow vertices along their
-rails, tune the flow count and curvature bias in the sidebar panel, then
-Enter to apply or Esc to cancel. Geometry outside the strip is preserved by
-re-attaching it as n-gons.
+its vertices (this also fixes the flow count), Shift+click or drag flow
+vertices to anchor them (their displacement propagates to neighboring flows
+with an adjustable falloff), tune flow count, curvature bias, and influence
+in the sidebar panel, then Enter to apply or Esc to cancel. The end rows
+start locked on the rail endpoints and can be unlocked too. Geometry outside
+the strip is preserved by re-attaching it as n-gons.
 
 ## How it works
 

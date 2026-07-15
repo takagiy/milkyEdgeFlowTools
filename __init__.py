@@ -324,6 +324,11 @@ _translations = {
               "(0 = keep a similar density)"):
             "生成する交差フローの本数（0 = 近い密度を維持）",
         ("*", "Curvature Bias"): "曲率バイアス",
+        ("*", "Influence"): "影響範囲",
+        ("*", "How many neighboring flows a locked or dragged vertex "
+              "influences (0 = constrained flows only)"):
+            "ロック/ドラッグした頂点が影響する近隣フローの"
+            "おおよその本数（0 = 制約したフローのみ）",
         ("*", "Bias of the subdivision density toward curved regions "
               "(0 = uniform)"):
             "分割密度を曲率の高い領域へ寄せる度合い（0 = 等間隔）",
