@@ -1,6 +1,6 @@
 [project]
 name = "milky-edge-flow-tools"
-version = "0.4.1" # x-release-please-version
+version = "0.5.0" # x-release-please-version
 description = "Blender extension: relax crossing edge flows by resampling selected edge loops"
 # Locked to the Python bundled with Blender 5.0 (the bpy wheel requires it).
 requires-python = "==3.11.*"
