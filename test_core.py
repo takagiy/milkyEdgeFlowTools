@@ -62,6 +62,7 @@ from core import (
     enforce_min_spacing,
     flow_direction,
     generate_flows,
+    opposite_shore_params,
     order_chains,
     order_rails,
     relax_chain,
@@ -398,6 +399,23 @@ class TestFlowSmoothing(unittest.TestCase):
         self.assertAlmostEqual(params[1], 0.0, delta=1e-9)
 
 
+class TestOppositeShore(unittest.TestCase):
+    def test_projection_beats_arc_ratios(self):
+        # A locked chain that detours sideways inflates its arc length;
+        # ratio copying would land vertex 1 at ~0.67 on the rail, but the
+        # geometric opposite of (2, 1) is y = 1.
+        rail = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                               closed=False)
+        locked = [(2.0, 0.0, 0.0), (2.0, 1.0, 0.0),
+                  (4.0, 1.0, 0.0), (4.0, 4.0, 0.0)]
+        params = opposite_shore_params(locked, rail)
+        self.assertAlmostEqual(params[0], 0.0, delta=1e-9)
+        self.assertAlmostEqual(params[-1], rail.total_length, delta=1e-9)
+        self.assertAlmostEqual(params[1], 1.0, delta=0.05)
+        for a, b in zip(params, params[1:]):
+            self.assertGreater(b, a)
+
+
 class TestGenerateFlows(unittest.TestCase):
     def test_uniform_grid(self):
         rails = straight_rails(3)
@@ -415,6 +433,23 @@ class TestGenerateFlows(unittest.TestCase):
         self.assertEqual(len(flows), 3)
         self.assertAlmostEqual(flows[1][0], 0.4, delta=0.05)  # 0.1 * len 4
         self.assertAlmostEqual(flows[1][2], 0.4, delta=0.05)
+
+    def test_intermediate_rails_follow_smoothing_not_ratios(self):
+        # Ratios bind only the outer rails; a free intermediate rail must
+        # settle where the smoothing puts it, not at ratio * its length.
+        rail0 = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                                closed=False)   # length 4
+        rail1 = CatmullRomCurve([(1.0, float(y), 0.0) for y in range(9)],
+                                closed=False)   # length 8
+        rail2 = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(9)],
+                                closed=False)   # length 8
+        flows = generate_flows([rail0, rail1, rail2], count=3,
+                               locked_ratios=[0.0, 0.25, 1.0])
+        # Endpoints at ratio 0.25: y=1 on rail0, y=2 on rail2. The smooth
+        # middle sits near their midpoint (y=1.5), not at 0.25 * 8 = 2.
+        self.assertAlmostEqual(flows[1][0], 1.0, delta=1e-6)
+        self.assertAlmostEqual(flows[1][2], 2.0, delta=1e-6)
+        self.assertAlmostEqual(flows[1][1], 1.5, delta=0.05)
 
     def test_vertex_constraint_is_honored(self):
         rails = straight_rails(3)

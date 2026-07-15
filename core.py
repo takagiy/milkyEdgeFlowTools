@@ -564,6 +564,33 @@ def common_sample_ratios(curves, count, bias, resolution=128):
     return ratios
 
 
+def opposite_shore_params(points, curve):
+    """Arc params on `curve` geometrically opposite the given points.
+
+    Used when a locked chain dictates the flows: normalized arc ratios of
+    a strongly curved chain skew away from the visual correspondence (its
+    curvature inflates the denominator), so each locked vertex is instead
+    projected to its closest point on the rail. The first and last params
+    are forced onto the rail endpoints (the end flows connect endpoints by
+    construction) and the sequence is kept strictly increasing.
+    """
+    length = curve.total_length
+    params = [curve.closest_param_to_point(tuple(p))[0] for p in points]
+    n = len(params)
+    if n == 0:
+        return []
+    params[0] = 0.0
+    if n > 1:
+        params[-1] = length
+    gap = 1.0e-3 * (length / max(1, n - 1))
+    for i in range(1, n - 1):
+        params[i] = max(params[i], params[i - 1] + gap)
+    for i in range(n - 2, 0, -1):
+        if params[i] > params[i + 1] - gap:
+            params[i] = params[i + 1] - gap
+    return params
+
+
 def smooth_flow_on_rails(rails, params, pinned, iterations=10):
     """Slide flow vertices along their rail curves to minimize bending.
 

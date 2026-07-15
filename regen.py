@@ -258,6 +258,7 @@ def default_flow_count(data):
 def generate(data, count, bias, locked_rails=(), constraints=None):
     """Generate flows: per-flow lists of arc params, one per rail."""
     locked_ratios = None
+    merged = dict(constraints or {})
     if locked_rails:
         ratio_lists = []
         for rj in locked_rails:
@@ -266,10 +267,27 @@ def generate(data, count, bias, locked_rails=(), constraints=None):
                                 for s in curve.knot_params])
         locked_ratios = [sum(rs[i] for rs in ratio_lists) / len(ratio_lists)
                          for i in range(len(ratio_lists[0]))]
-    merged = dict(constraints or {})
-    for rj in locked_rails:
-        for i, s in enumerate(data.curves[rj].knot_params):
-            merged[(i, rj)] = s
+        for rj in locked_rails:
+            for i, s in enumerate(data.curves[rj].knot_params):
+                merged.setdefault((i, rj), s)
+        # Flow endpoints on the outer rails sit at the geometric opposite
+        # of the locked vertices (normalized arc ratios skew on strongly
+        # curved chains), averaged over the locked chains. Explicit user
+        # constraints (drags) take precedence.
+        flow_total = len(locked_ratios)
+        for side in (0, len(data.curves) - 1):
+            if side in locked_rails:
+                continue
+            projections = []
+            for rj in locked_rails:
+                curve = data.curves[rj]
+                points = [curve.point_at(s) for s in curve.knot_params]
+                projections.append(core.opposite_shore_params(
+                    points, data.curves[side]))
+            for i in range(flow_total):
+                merged.setdefault(
+                    (i, side),
+                    sum(p[i] for p in projections) / len(projections))
     return core.generate_flows(data.curves, count, bias=bias,
                                locked_ratios=locked_ratios,
                                constraints=merged)
@@ -862,7 +880,7 @@ class VIEW3D_PT_milky_regen(bpy.types.Panel):
         col = layout.column()
         col.enabled = not _session.locked
         col.prop(settings, "flow_count")
-        layout.prop(settings, "curvature_bias")
+        col.prop(settings, "curvature_bias")
         if _session.message:
             layout.label(text=_session.message, icon='ERROR')
         row = layout.row()

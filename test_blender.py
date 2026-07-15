@@ -20,6 +20,7 @@ import bmesh
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import milkyEdgeFlowTools  # noqa: E402
+from milkyEdgeFlowTools import regen as milky_regen  # noqa: E402
 
 N = 7            # verts per side
 COL = 3          # selected column (edge loop along +Y)
@@ -199,6 +200,27 @@ def test_regenerate_same_density():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
+def test_regenerate_locked_rail():
+    """A locked rail keeps its original vertices and dictates the count;
+    the opposite rail is resampled at the geometric opposites."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+    count = milky_regen.run_regeneration(obj, locked_rails=(0,))
+    assert count == REG_ROWS, f"flow count {count}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    assert len(bm.verts) == 24, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 12, f"face count {len(bm.faces)}"
+    for x in (1.0, 4.0):
+        ys = sorted(round(v.co.y, 3) for v in bm.verts
+                    if abs(v.co.x - x) < 1e-4)
+        assert ys == [0.0, 1.0, 2.0, 3.0, 4.0], (x, ys)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
 def test_regenerate_rejects_single_chain():
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -254,6 +276,7 @@ def main():
 
     test_regenerate_basic()
     test_regenerate_same_density()
+    test_regenerate_locked_rail()
     test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()
