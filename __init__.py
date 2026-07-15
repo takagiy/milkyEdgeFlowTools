@@ -12,6 +12,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty
 
 from . import core
+from . import regen
 
 MAX_RING_STEPS = 16
 
@@ -260,6 +261,7 @@ class VIEW3D_MT_milky_edge_flow_tools(bpy.types.Menu):
 
     def draw(self, context):
         self.layout.operator(MESH_OT_milky_relax_crossing_flows.bl_idname)
+        self.layout.operator("mesh.milky_regenerate_crossing_flows")
 
 
 def _draw_context_menu(self, context):
@@ -307,6 +309,48 @@ _translations = {
             "分岐のある選択を %d 個スキップしました",
         ("*", "No movable edge loops in selection"):
             "選択内に移動可能なエッジループがありません",
+        ("Operator", "Regenerate Crossing Flows"):
+            "交差するフローを再生成",
+        ("*", "Regenerate Crossing Flows"):
+            "交差するフローを再生成",
+        ("*", "Delete the strip between the outermost selected chains and "
+              "regenerate crossing flows on fitted curves"):
+            "選択チェーンの両端の間のストリップを削除し、"
+            "近似曲線上に交差するフローを再生成する",
+        ("*", "Flow Count"): "フロー本数",
+        ("*", "Number of crossing flows to generate"):
+            "生成する交差フローの本数",
+        ("*", "Number of crossing flows to generate "
+              "(0 = keep a similar density)"):
+            "生成する交差フローの本数（0 = 近い密度を維持）",
+        ("*", "Curvature Bias"): "曲率バイアス",
+        ("*", "Bias of the subdivision density toward curved regions "
+              "(0 = uniform)"):
+            "分割密度を曲率の高い領域へ寄せる度合い（0 = 等間隔）",
+        ("*", "Locked chains must have the same vertex count (%d vs %d)"):
+            "ロックするチェーンの頂点数が一致しません (%d と %d)",
+        ("*", "Selected chains must form a row of parallel open loops"):
+            "選択チェーンは平行な開ループの並びである必要があります",
+        ("*", "Select two or more parallel edge chains"):
+            "平行なエッジチェーンを2本以上選択してください",
+        ("*", "Closed loops are not supported yet"):
+            "閉ループには未対応です",
+        ("*", "The strip contains a hole; fill it or exclude it first"):
+            "ストリップ内に穴があります。先に埋めるか除外してください",
+        ("*", "Could not trace the strip ends; the end rows must be "
+              "walkable crossing paths"):
+            "ストリップの端を辿れませんでした。端の列は連続した"
+            "交差パスである必要があります",
+        ("*", "Flow count is fixed by a locked chain"):
+            "フロー本数はロックされたチェーンで固定されています",
+        ("*", "Flows: %d"): "フロー本数: %d",
+        ("*", " (locked)"): "（ロック中）",
+        ("*", "Drag: move vertex   Shift+Click: lock/unlock   "
+              "+/-: flow count   Enter: apply   Esc: cancel"):
+            "ドラッグ: 頂点を移動   Shift+クリック: ロック/解除   "
+            "+/-: フロー本数   Enter: 適用   Esc: キャンセル",
+        ("*", "Apply"): "適用",
+        ("*", "Cancel"): "キャンセル",
     },
 }
 
@@ -324,6 +368,7 @@ _classes = (
 def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
+    regen.register()
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(_draw_context_menu)
     bpy.app.translations.register(__name__, _translations)
 
@@ -331,5 +376,6 @@ def register():
 def unregister():
     bpy.app.translations.unregister(__name__)
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(_draw_context_menu)
+    regen.unregister()
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

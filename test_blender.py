@@ -98,6 +98,119 @@ def test_lock_ends_and_iterations():
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+REG_COLS = 6
+REG_ROWS = 5
+
+
+def build_plain_grid(cols, rows):
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for existing in list(bpy.data.objects):
+        bpy.data.objects.remove(existing)
+    verts = [(float(c), float(r), 0.0)
+             for r in range(rows) for c in range(cols)]
+    faces = []
+    for r in range(rows - 1):
+        for c in range(cols - 1):
+            faces.append((r * cols + c, r * cols + c + 1,
+                          (r + 1) * cols + c + 1, (r + 1) * cols + c))
+    mesh = bpy.data.meshes.new("regen_grid")
+    mesh.from_pydata(verts, [], faces)
+    mesh.validate()
+    obj = bpy.data.objects.new("regen_grid", mesh)
+    bpy.context.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    return obj
+
+
+def select_grid_columns(obj, cols, grid_cols, grid_rows):
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    keys = {frozenset((r * grid_cols + c, (r + 1) * grid_cols + c))
+            for c in cols for r in range(grid_rows - 1)}
+    for e in bm.edges:
+        e.select = frozenset(
+            (e.verts[0].index, e.verts[1].index)) in keys
+    for v in bm.verts:
+        v.select = any(e.select for e in v.link_edges)
+    bm.select_flush(True)
+    bmesh.update_edit_mesh(obj.data)
+
+
+def test_regenerate_basic():
+    """6x5 grid, rails at x=1 and x=4, regenerate with 3 flows."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+    result = bpy.ops.mesh.milky_regenerate_crossing_flows(
+        flow_count=3, curvature_bias=0.0)
+    assert result == {'FINISHED'}, f"operator returned {result}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+
+    assert len(bm.verts) == 20, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 10, f"face count {len(bm.faces)}"
+
+    def verts_at_x(x):
+        return sorted(round(v.co.y, 3) for v in bm.verts
+                      if abs(v.co.x - x) < 1e-4)
+
+    assert verts_at_x(1.0) == [0.0, 2.0, 4.0], verts_at_x(1.0)
+    assert verts_at_x(4.0) == [0.0, 2.0, 4.0], verts_at_x(4.0)
+    # Kept end-path verts survive; strip interior is gone.
+    assert verts_at_x(2.0) == [0.0, 4.0], verts_at_x(2.0)
+    assert verts_at_x(3.0) == [0.0, 4.0], verts_at_x(3.0)
+    # Outside columns untouched.
+    assert verts_at_x(0.0) == [0.0, 1.0, 2.0, 3.0, 4.0]
+    assert verts_at_x(5.0) == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+    # Only rail edges are selected afterwards.
+    for e in bm.edges:
+        on_rail = all(abs(v.co.x - 1.0) < 1e-4 for v in e.verts) \
+            or all(abs(v.co.x - 4.0) < 1e-4 for v in e.verts)
+        assert e.select == on_rail, \
+            f"selection mismatch at {[tuple(v.co) for v in e.verts]}"
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
+def test_regenerate_same_density():
+    """flow_count matching the original density keeps positions."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+    result = bpy.ops.mesh.milky_regenerate_crossing_flows(
+        flow_count=5, curvature_bias=0.0)
+    assert result == {'FINISHED'}, f"operator returned {result}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    assert len(bm.verts) == 24, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 12, f"face count {len(bm.faces)}"
+    for x in (1.0, 4.0):
+        ys = sorted(round(v.co.y, 3) for v in bm.verts
+                    if abs(v.co.x - x) < 1e-4)
+        assert ys == [0.0, 1.0, 2.0, 3.0, 4.0], ys
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
+def test_regenerate_rejects_single_chain():
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1,), REG_COLS, REG_ROWS)
+    try:
+        result = bpy.ops.mesh.milky_regenerate_crossing_flows(flow_count=3)
+        assert result == {'CANCELLED'}, f"operator returned {result}"
+    except RuntimeError:
+        pass  # error report raises in background mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
 def main():
     milkyEdgeFlowTools.register()
     obj = fresh_grid()
@@ -138,6 +251,10 @@ def main():
     bpy.ops.object.mode_set(mode='OBJECT')
 
     test_lock_ends_and_iterations()
+
+    test_regenerate_basic()
+    test_regenerate_same_density()
+    test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()
     print("test_blender: ALL ASSERTIONS PASSED")

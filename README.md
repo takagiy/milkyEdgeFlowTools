@@ -2,12 +2,21 @@
 
 English | [日本語](README_ja.md)
 
-Edge flow tools for Blender 5.0+. Currently ships one operator:
+Edge flow tools for Blender 5.0+, in the Edit Mode right-click menu.
 
 **Relax Crossing Flows** — resamples selected edge loops on a fitted curve so
 that the edge loops crossing them relax. The shape of the selected loop is
 preserved by the curve; only the distribution of its vertices changes, sliding
 each vertex to where the crossing flows naturally want to arrive.
+
+**Regenerate Crossing Flows** — select two or more roughly parallel chains
+(rails), and the strip between the outermost ones is deleted and rebuilt with
+freshly generated crossing flows placed on the rails' fitted curves. An
+interactive adjustment mode previews the result: Shift+click a rail to lock
+its vertices (this also fixes the flow count), drag flow vertices along their
+rails, tune the flow count and curvature bias in the sidebar panel, then
+Enter to apply or Esc to cancel. Geometry outside the strip is preserved by
+re-attaching it as n-gons.
 
 ## How it works
 
