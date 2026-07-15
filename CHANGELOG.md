@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.7.1...v0.8.0) (2026-07-15)
+
+
+### Features
+
+* blend the strip-end offset into neighboring flows ([a1c430d](https://github.com/takagiy/milkyEdgeFlowTools/commit/a1c430d088928bbcb92c61f2922db3003923fe9e))
+
 ## [0.7.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.7.0...v0.7.1) (2026-07-15)
 
 
