@@ -135,7 +135,9 @@ def select_grid_columns(obj, cols, grid_cols, grid_rows):
             (e.verts[0].index, e.verts[1].index)) in keys
     for v in bm.verts:
         v.select = any(e.select for e in v.link_edges)
-    bm.select_flush(True)
+    # No select_flush: it would also select the rungs between adjacent
+    # selected columns (all their verts are selected), turning the rails
+    # into a branched ladder.
     bmesh.update_edit_mesh(obj.data)
 
 
@@ -245,6 +247,62 @@ def test_regenerate_moved_end_row():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
+def test_regenerate_three_rails():
+    """Multi-bay strips: the fill must cross intermediate rails, and the
+    unselected interior column between rails must be deleted."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 2, 4), REG_COLS, REG_ROWS)
+
+    result = bpy.ops.mesh.milky_regenerate_crossing_flows(
+        flow_count=3, curvature_bias=0.0)
+    assert result == {'FINISHED'}, f"operator returned {result}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+
+    def verts_at_x(x):
+        return sorted(round(v.co.y, 3) for v in bm.verts
+                      if abs(v.co.x - x) < 1e-4)
+
+    for x in (1.0, 2.0, 4.0):
+        assert verts_at_x(x) == [0.0, 2.0, 4.0], (x, verts_at_x(x))
+    # The unselected interior column survives only at the kept end verts.
+    assert verts_at_x(3.0) == [0.0, 4.0], verts_at_x(3.0)
+    assert len(bm.verts) == 21, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 12, f"face count {len(bm.faces)}"
+    assert not any(len(e.link_faces) > 2 for e in bm.edges), "non-manifold"
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
+def test_regenerate_denser_count():
+    """Increasing the flow count must not create chord (diagonal) edges
+    that skip new rail vertices in the rebuilt outside faces."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+    result = bpy.ops.mesh.milky_regenerate_crossing_flows(
+        flow_count=7, curvature_bias=0.0)
+    assert result == {'FINISHED'}, f"operator returned {result}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    for x in (1.0, 4.0):
+        rail = sorted((round(v.co.y, 5), v.index) for v in bm.verts
+                      if abs(v.co.x - x) < 1e-4)
+        order = {idx: k for k, (_y, idx) in enumerate(rail)}
+        for e in bm.edges:
+            if all(abs(v.co.x - x) < 1e-4 for v in e.verts):
+                a, b = (order[v.index] for v in e.verts)
+                assert abs(a - b) == 1, \
+                    f"diagonal rail edge at x={x}: positions {a}-{b}"
+    assert not any(len(e.link_faces) > 2 for e in bm.edges), "non-manifold"
+    boundary = sum(1 for e in bm.edges if len(e.link_faces) < 2)
+    assert boundary == 2 * (REG_COLS - 1) + 2 * (REG_ROWS - 1), boundary
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
 def test_regenerate_rejects_single_chain():
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -302,6 +360,8 @@ def main():
     test_regenerate_same_density()
     test_regenerate_locked_rail()
     test_regenerate_moved_end_row()
+    test_regenerate_three_rails()
+    test_regenerate_denser_count()
     test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()

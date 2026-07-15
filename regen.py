@@ -181,9 +181,15 @@ def analyze_strip(bm):
         data.end_paths.append(path)
 
     # Flood fill the strip faces from the corner face (the unique face
-    # sharing both the first rail edge and the first end-path edge), with
-    # rail and end-path edges as barriers.
-    barrier = set(chain_keys)
+    # sharing both the first rail edge and the first end-path edge).
+    # Barriers are the OUTER rails and the end paths only — intermediate
+    # rails are interior to the strip and the fill must cross them,
+    # otherwise only the first bay would be detected and the other bays
+    # would survive the deletion and overlap the regenerated grid.
+    barrier = set()
+    for rail in (rails[0], rails[-1]):
+        for a, b in zip(rail, rail[1:]):
+            barrier.add(frozenset((a, b)))
     for path in data.end_paths:
         for a, b in zip(path, path[1:]):
             barrier.add(frozenset((a, b)))
@@ -579,11 +585,15 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
                 idx += 1
             reverse = len(run) > 1 and run[0] > run[-1]
             params = list(reversed(run)) if reverse else run
-            mapped = [rail_seq_verts[rj][i] for i in
-                      _monotone_nearest(params, rail_seq_params[rj])]
+            mapping = _monotone_nearest(params, rail_seq_params[rj])
+            # Take the full contiguous span of new rail verts between the
+            # mapped anchors: skipping any of them would create a chord
+            # edge bypassing rail vertices (visible as a bogus diagonal)
+            # that conflicts with the strip-side quads.
+            span = rail_seq_verts[rj][mapping[0]:mapping[-1] + 1]
             if reverse:
-                mapped.reverse()
-            verts.extend(mapped)
+                span = list(reversed(span))
+            verts.extend(span)
         make_face(verts, material, smooth)
 
     _match_orientation(bm, new_faces)
