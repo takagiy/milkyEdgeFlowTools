@@ -200,12 +200,9 @@ class CatmullRomCurve:
         u = 0.0 if span < 1.0e-12 else (s - cum[j]) / span
         return _lerp(self._samples[j], self._samples[j + 1], u)
 
-    def closest_param_to_point(self, point, extend=0.0):
+    def closest_param_to_point(self, point):
         """Arc-length param of the curve point closest to `point`.
 
-        With `extend` > 0 the search also covers straight tangent
-        extensions of that length beyond both curve ends, and the
-        returned param may then be negative or exceed total_length.
         Returns (s, distance).
         """
         samples, cum = self._samples, self._cum
@@ -223,20 +220,6 @@ class CatmullRomCurve:
             if dist < best_dist:
                 best_dist = dist
                 best_s = cum[j] + u * (cum[j + 1] - cum[j])
-        if extend > 0.0 and len(samples) >= 2:
-            for anchor, inner, sign, base_s in (
-                    (samples[0], samples[1], -1.0, 0.0),
-                    (samples[-1], samples[-2], 1.0, self.total_length)):
-                direction = _normalize(_sub(anchor, inner))
-                if direction is None:
-                    continue
-                u = min(max(_dot(_sub(point, anchor), direction), 0.0),
-                        extend)
-                candidate = _add(anchor, _mul(direction, u))
-                dist = math.dist(candidate, point)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_s = base_s + sign * u
         return best_s, best_dist
 
     def closest_param_to_ray(self, origin, direction):

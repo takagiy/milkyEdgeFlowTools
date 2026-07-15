@@ -337,44 +337,7 @@ def compose_flows(data, count, bias, locked_rails=(), constraints=None,
         constrained_rows[i] = core.smooth_flow_on_rails(
             data.curves, params, pinned)
 
-    # End rows: their "ideal" position extends the locked chain's interior
-    # rhythm one step past the neighboring row, instead of sitting exactly
-    # on the strip boundary. The delta (per end, in arc-ratio terms) is
-    # the difference between the chain's outermost segment and the
-    # adjacent interior segment, so a chain whose end band deviates from
-    # its own rhythm gets that deviation blended over ~Influence bands
-    # (uniform chains give zero; Influence 0 disables the effect). Capped
-    # to twice the local band as a safety.
-    prop_base = base
-    if locked_rails and len(base) >= 4:
-        prop_base = [list(flow) for flow in base]
-        last = len(base) - 1
-        for row in (0, last):
-            ratio_deltas = []
-            for lk in locked_rails:
-                knots = data.curves[lk].knot_params
-                length = data.curves[lk].total_length
-                if row == 0:
-                    outer = knots[1] - knots[0]
-                    inner = knots[2] - knots[1]
-                    ratio_deltas.append((inner - outer) / length)
-                else:
-                    outer = knots[-1] - knots[-2]
-                    inner = knots[-2] - knots[-3]
-                    ratio_deltas.append((outer - inner) / length)
-            ratio_delta = sum(ratio_deltas) / len(ratio_deltas)
-            for rj in range(rail_count):
-                if rj in locked_rails:
-                    continue
-                curve = data.curves[rj]
-                resolved = 0.0 if row == 0 else curve.total_length
-                neighbor = base[1][rj] if row == 0 else base[last - 1][rj]
-                band = abs(neighbor - resolved)
-                delta = ratio_delta * curve.total_length
-                delta = min(max(delta, -2.0 * band), 2.0 * band)
-                prop_base[row][rj] = resolved - delta
-
-    flows = core.propagate_flow_constraints(prop_base, constrained_rows,
+    flows = core.propagate_flow_constraints(base, constrained_rows,
                                             influence)
     # Keep each rail's rows ordered and on the curve.
     for rj, curve in enumerate(data.curves):
