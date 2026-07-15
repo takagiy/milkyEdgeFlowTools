@@ -29,14 +29,8 @@ Smoothing solver:
   [x] pin influence decays with distance
   [x] missing targets are interpolated smoothly
   [x] closed chain: pin influence wraps symmetrically
-Spacing protection:
-  [x] PAVA projection pools crowded params and enforces beta * original gaps
-  [x] projection keeps pinned vertices exactly and clips runs between pins
-  [x] converging targets keep min spacing through relax_chain_step
-Spiral extrapolation:
-  [x] two-point ring degenerates to a straight path
-  [x] collinear ring gives a straight path
-  [x] curved ring initially follows the circle, then straightens
+Ordering:
+  [x] min spacing enforcement keeps sequence monotone
 Chain application order (order_chains):
   [x] chains seen on the dominant side are applied first
   [x] cyclic dependencies fall back to stable input order
@@ -57,10 +51,9 @@ from core import (
     CatmullRomCurve,
     compute_vertex_target,
     decompose_chains,
-    extrapolation_path,
+    enforce_min_spacing,
     flow_direction,
     order_chains,
-    project_min_spacing,
     relax_chain,
     relax_chain_step,
     solve_relaxed_params,
@@ -224,99 +217,14 @@ class TestSolver(unittest.TestCase):
         self.assertAlmostEqual(out[2], out[6], delta=1e-6)
 
 
-class TestSpacingProjection(unittest.TestCase):
-    def test_pools_crowded_params(self):
-        # Original gaps of 1.0, beta 0.5 -> neighbors may not get closer
-        # than 0.5. The crowded run [0, 0.1, 0.2] is pooled symmetrically.
-        out = project_min_spacing([0.0, 0.1, 0.2, 3.0], gaps=[1.0, 1.0, 1.0],
-                                  pinned=[False] * 4, beta=0.5,
-                                  closed=False, total_length=10.0)
-        self.assertAlmostEqual(out[0], -0.4, delta=1e-6)
-        self.assertAlmostEqual(out[1], 0.1, delta=1e-6)
-        self.assertAlmostEqual(out[2], 0.6, delta=1e-6)
-        self.assertAlmostEqual(out[3], 3.0, delta=1e-6)
-
-    def test_respects_pins(self):
-        out = project_min_spacing([0.0, 0.1, 0.2, 3.0], gaps=[1.0, 1.0, 1.0],
-                                  pinned=[True, False, False, True],
-                                  beta=0.5, closed=False, total_length=10.0)
-        self.assertAlmostEqual(out[0], 0.0, delta=1e-9)
-        self.assertAlmostEqual(out[3], 3.0, delta=1e-9)
-        for (a, b), g in zip(zip(out, out[1:]), [1.0, 1.0, 1.0]):
-            self.assertGreaterEqual(b - a, 0.5 * g - 1e-6)
-
-    def test_satisfied_input_is_unchanged(self):
-        params = [0.0, 1.0, 2.0, 3.0]
-        out = project_min_spacing(params, gaps=[1.0, 1.0, 1.0],
-                                  pinned=[False] * 4, beta=0.5,
-                                  closed=False, total_length=10.0)
-        for a, b in zip(out, params):
-            self.assertAlmostEqual(a, b, delta=1e-9)
-
-
-class TestSpiralExtrapolation(unittest.TestCase):
-    def test_two_point_ring_is_straight(self):
-        path = extrapolation_path([(1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
-                                  extent=10.0)
-        self.assertEqual(len(path), 2)
-        self.assertLess(vlen(path[0], (1, 0, 0)), 1e-9)
-        self.assertLess(vlen(path[-1], (-9, 0, 0)), 1e-6)
-
-    def test_collinear_ring_is_straight(self):
-        path = extrapolation_path([(1.0, 0.0, 0.0), (2.0, 0.0, 0.0),
-                                   (3.0, 0.0, 0.0)], extent=10.0)
-        for p in path:
-            self.assertAlmostEqual(p[1], 0.0, delta=1e-9)
-            self.assertAlmostEqual(p[2], 0.0, delta=1e-9)
-        self.assertLess(path[-1][0], -8.0)
-
-    def test_curved_ring_follows_then_straightens(self):
-        # Ring sampled from a radius-2 circle, travelling clockwise toward
-        # angle 0. The spiral should hug the circle near the start (much
-        # closer than the straight tangent, whose distance from the origin
-        # at arc length 1 is sqrt(5) ~ 2.236) and unwind further out.
-        r = 2.0
-        ring = []
-        for deg in (10.0, 20.0, 30.0):  # nearest first
-            a = math.radians(deg)
-            ring.append((r * math.cos(a), r * math.sin(a), 0.0))
-        path = extrapolation_path(ring, extent=50.0)
-        self.assertGreater(len(path), 3)
-
-        # Walk to arc length ~1.0 along the path.
-        walked = 0.0
-        probe = None
-        for a, b in zip(path, path[1:]):
-            step = vlen(a, b)
-            if walked + step >= 1.0:
-                t = (1.0 - walked) / step
-                probe = tuple(a[k] + (b[k] - a[k]) * t for k in range(3))
-                break
-            walked += step
-        self.assertIsNotNone(probe)
-        dist_from_center = math.sqrt(probe[0] ** 2 + probe[1] ** 2)
-        self.assertGreater(dist_from_center, 1.9)
-        self.assertLess(dist_from_center, 2.16)
-
-
-class TestConvergingFlows(unittest.TestCase):
-    def test_step_keeps_min_spacing(self):
-        # Straight curve along X; two middle vertices are pulled toward
-        # nearly the same point (crossing flows converging). Their final
-        # gap must not drop below min_spacing * original gap.
-        points = [(float(x), 0.0, 0.0) for x in range(5)]
-        curve = CatmullRomCurve(points, closed=False)
-        rings = {0: 0.0, 1: 1.45, 2: 1.55, 3: 3.0, 4: 4.0}
-        sides = []
-        for i in range(5):
-            x = rings[i]
-            sides.append([[(x, 1.0, 0.0), (x, 2.0, 0.0)]])
-        params = relax_chain_step(curve, list(curve.knot_params), sides,
-                                  [False] * 5, side_blend=0.0, stiffness=0.1,
-                                  min_spacing=0.3)
-        gap = params[2] - params[1]
-        self.assertGreaterEqual(gap, 0.3 - 1e-6)
-        self.assertAlmostEqual(params[1] + params[2], 3.0, delta=0.1)
+class TestOrdering(unittest.TestCase):
+    def test_min_spacing_open(self):
+        s = enforce_min_spacing([0.0, 2.0, 1.9, 5.0], closed=False,
+                                total_length=10.0, min_gap=0.05)
+        for a, b in zip(s, s[1:]):
+            self.assertGreaterEqual(b - a, 0.05 - 1e-9)
+        self.assertAlmostEqual(s[0], 0.0)
+        self.assertAlmostEqual(s[3], 5.0)
 
 
 class TestOrderChains(unittest.TestCase):

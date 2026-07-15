@@ -15,11 +15,8 @@ each vertex to where the crossing flows naturally want to arrive.
   work; branched selections are skipped with a warning).
 - Each chain is fitted with a centripetal Catmull-Rom spline that passes
   through every original vertex.
-- For each vertex, the crossing edge loops are extrapolated onto the curve
-  as curvature-decaying spirals — curved flows keep their bend near the
-  loop and straighten out with distance — to find the relaxed position.
-- Neighboring vertices are kept from crowding together where converging
-  flows aim at the same spot (Min Spacing).
+- For each vertex, the incoming direction of the crossing edge loops is
+  extrapolated onto the curve to find the relaxed position.
 - Vertices whose crossing edges define the object's shape (mesh boundaries,
   sharp creases, edges marked Sharp) are pinned, and their influence falls
   off smoothly with distance.
@@ -43,7 +40,6 @@ each vertex to where the crossing flows naturally want to arrive.
 | Side Blend | 0.0 | Blend between the flow of the side with more rings (0) and fewer rings (1) |
 | Face Angle Limit | 90° | Crossing edges whose faces meet at this interior angle or less are treated as shape-defining and pinned |
 | Stiffness | 1.0 | Smoothness of the redistribution; higher values spread the influence of pinned vertices further |
-| Min Spacing | 0.3 | Minimum spacing between neighboring vertices, as a fraction of their original spacing |
 | Iterations | 1 | Number of times the relax pass is applied (1, 5, 10, 15, 20, 25, 30) |
 | Lock Ends | off | Keep both end vertices of each open edge loop in place |
 
