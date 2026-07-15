@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.8.0...v0.9.0) (2026-07-15)
+
+
+### Features
+
+* derive end-row deltas from the chain interior rhythm ([599eb26](https://github.com/takagiy/milkyEdgeFlowTools/commit/599eb26d6d5261d5680af9caae069fd894b70a7b))
+
 ## [0.8.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.7.1...v0.8.0) (2026-07-15)
 
 
