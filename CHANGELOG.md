@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.3.1...v0.4.0) (2026-07-15)
+
+
+### Features
+
+* Regenerate Crossing Flows (modal strip rebuild) ([917ca36](https://github.com/takagiy/milkyEdgeFlowTools/commit/917ca362261ab620d71c5f57b76c6b4883a61fab))
+
 ## [0.3.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.3.0...v0.3.1) (2026-07-15)
 
 
