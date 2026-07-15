@@ -46,7 +46,6 @@ Constraint propagation (v0.5.0):
   [x] a pinned displacement decays monotonically into neighbors
   [x] higher influence spreads further
   [x] propagate_flow_constraints displaces neighboring flows per rail
-  [x] opposite_shore_params can leave the ends unclamped
 Regeneration core (M1):
   [x] order_rails orders a path from unordered adjacency; rejects branches
   [x] common_sample_ratios: straight rails -> uniform; bias 0 -> uniform
@@ -68,7 +67,6 @@ from core import (
     enforce_min_spacing,
     flow_direction,
     generate_flows,
-    opposite_shore_params,
     order_chains,
     order_rails,
     propagate_deltas,
@@ -445,51 +443,6 @@ class TestPropagation(unittest.TestCase):
         self.assertAlmostEqual(out[1][0], 2.5, delta=1e-9)
         for i in (0, 2, 3):
             self.assertAlmostEqual(out[i][0], base[i][0], delta=1e-9)
-
-
-class TestOppositeShore(unittest.TestCase):
-    def test_unclamped_ends(self):
-        rail = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
-                               closed=False)
-        locked = [(2.0, 0.5, 0.0), (2.0, 2.0, 0.0), (2.0, 3.0, 0.0)]
-        clamped = opposite_shore_params(locked, rail)
-        self.assertAlmostEqual(clamped[0], 0.0, delta=1e-9)
-        raw = opposite_shore_params(locked, rail, clamp_ends=False)
-        self.assertAlmostEqual(raw[0], 0.5, delta=0.05)
-        self.assertAlmostEqual(raw[-1], 3.0, delta=0.05)
-
-    def test_projection_beats_arc_ratios(self):
-        # A locked chain that detours sideways inflates its arc length;
-        # ratio copying would land vertex 1 at ~0.67 on the rail, but the
-        # geometric opposite of (2, 1) is y = 1.
-        rail = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
-                               closed=False)
-        locked = [(2.0, 0.0, 0.0), (2.0, 1.0, 0.0),
-                  (4.0, 1.2, 0.0), (4.0, 4.0, 0.0)]
-        params = opposite_shore_params(locked, rail)
-        self.assertAlmostEqual(params[0], 0.0, delta=1e-9)
-        self.assertAlmostEqual(params[-1], rail.total_length, delta=1e-9)
-        self.assertAlmostEqual(params[1], 1.0, delta=0.05)
-        self.assertAlmostEqual(params[2], 1.2, delta=0.05)
-        for a, b in zip(params, params[1:]):
-            self.assertGreater(b, a)
-
-    def test_saturated_tail_redistributed_by_ratios(self):
-        # The chain extends past the rail: its last two points both
-        # project onto the rail endpoint. The saturated vertex must be
-        # re-spread by the chain's arc ratios instead of collapsing.
-        rail = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
-                               closed=False)
-        locked = [(2.0, 0.0, 0.0), (2.0, 2.0, 0.0),
-                  (2.0, 5.0, 0.0), (2.0, 7.0, 0.0)]
-        ratios = [0.0, 2.0 / 7.0, 5.0 / 7.0, 1.0]
-        params = opposite_shore_params(locked, rail, clamp_ends=False,
-                                       ratios=ratios)
-        self.assertAlmostEqual(params[1], 2.0, delta=0.05)
-        self.assertAlmostEqual(params[2], 3.2, delta=0.05)
-        self.assertAlmostEqual(params[3], 4.0, delta=1e-6)
-        for a, b in zip(params, params[1:]):
-            self.assertGreater(b, a)
 
 
 class TestGenerateFlows(unittest.TestCase):

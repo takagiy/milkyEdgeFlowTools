@@ -255,8 +255,7 @@ def default_flow_count(data):
     return max(2, round(outer))
 
 
-def generate(data, count, bias, locked_rails=(), constraints=None,
-             use_projection=True):
+def generate(data, count, bias, locked_rails=(), constraints=None):
     """Generate flows: per-flow lists of arc params, one per rail."""
     locked_ratios = None
     merged = dict(constraints or {})
@@ -271,31 +270,18 @@ def generate(data, count, bias, locked_rails=(), constraints=None,
         for rj in locked_rails:
             for i, s in enumerate(data.curves[rj].knot_params):
                 merged.setdefault((i, rj), s)
-        # Flow endpoints on the outer rails: either the geometric opposite
-        # of the locked vertices (closest-point projection; default) or a
-        # plain copy of their normalized arc ratios. Averaged over the
-        # locked chains; explicit user constraints (drags) take precedence.
-        flow_total = len(locked_ratios)
+        # Flow endpoints on the outer rails copy the locked vertices'
+        # normalized arc ratios (averaged over the locked chains).
+        # Closest-point projection was tried here and retired: combined
+        # with the default end locks and the constraint propagation, the
+        # plain ratios produced the better strips in practice. Explicit
+        # user constraints (drags) take precedence.
         for side in (0, len(data.curves) - 1):
             if side in locked_rails:
                 continue
-            if use_projection:
-                projections = []
-                for rj in locked_rails:
-                    curve = data.curves[rj]
-                    points = [curve.point_at(s) for s in curve.knot_params]
-                    knot_ratios = [s / curve.total_length
-                                   for s in curve.knot_params]
-                    projections.append(core.opposite_shore_params(
-                        points, data.curves[side], clamp_ends=False,
-                        ratios=knot_ratios))
-                targets = [sum(p[i] for p in projections)
-                           / len(projections) for i in range(flow_total)]
-            else:
-                side_length = data.curves[side].total_length
-                targets = [r * side_length for r in locked_ratios]
-            for i in range(flow_total):
-                merged.setdefault((i, side), targets[i])
+            side_length = data.curves[side].total_length
+            for i, ratio in enumerate(locked_ratios):
+                merged.setdefault((i, side), ratio * side_length)
     return core.generate_flows(data.curves, count, bias=bias,
                                locked_ratios=locked_ratios,
                                constraints=merged)
@@ -316,7 +302,7 @@ def default_end_constraints(data, flow_count):
 
 
 def compose_flows(data, count, bias, locked_rails=(), constraints=None,
-                  influence=2.0, use_projection=True):
+                  influence=2.0):
     """Base generation plus decaying propagation of vertex constraints.
 
     The base is generated without vertex constraints; each constrained
@@ -324,8 +310,7 @@ def compose_flows(data, count, bias, locked_rails=(), constraints=None,
     constrained rows' displacements are propagated to the free rows with
     a falloff of roughly `influence` flows.
     """
-    base = generate(data, count, bias, locked_rails,
-                    use_projection=use_projection)
+    base = generate(data, count, bias, locked_rails)
     constraints = constraints or {}
     rail_count = len(data.curves)
 
@@ -621,7 +606,7 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
 
 
 def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
-                     constraints=None, influence=2.0, use_projection=True):
+                     constraints=None, influence=2.0):
     """Full UI-independent pipeline on an edit-mesh object.
 
     The end rows get their default endpoint locks; explicit constraints
@@ -636,7 +621,7 @@ def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
     merged = default_end_constraints(data, count)
     merged.update(constraints or {})
     flows = compose_flows(data, count, bias, locked_rails, merged,
-                          influence, use_projection)
+                          influence)
     apply_regeneration(bm, data, flows, locked_rails)
     bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
     return len(flows)
@@ -668,7 +653,6 @@ class _Session:
         self.count = default_flow_count(data)
         self.bias = 0.5
         self.influence = 2.0
-        self.use_projection = True
         self.locked = set()
         self.constraints = {}
         self.flows = []
@@ -715,7 +699,7 @@ def _reset_constraints(session):
 def _regenerate(session):
     session.flows = compose_flows(session.data, session.count, session.bias,
                                   tuple(session.locked), session.constraints,
-                                  session.influence, session.use_projection)
+                                  session.influence)
     session.count = len(session.flows)
     _refresh_caches(session)
 
@@ -765,7 +749,6 @@ def _sync_settings(session):
         settings.flow_count = session.count
         settings.curvature_bias = session.bias
         settings.influence = session.influence
-        settings.use_projection = session.use_projection
     finally:
         _suppress_updates = False
 
@@ -781,9 +764,6 @@ def _settings_changed(_self, _context):
         _regenerate(_session)
     if abs(settings.influence - _session.influence) > 1.0e-6:
         _session.influence = settings.influence
-        _regenerate(_session)
-    if settings.use_projection != _session.use_projection:
-        _session.use_projection = settings.use_projection
         _regenerate(_session)
 
 
@@ -966,14 +946,6 @@ class MilkyRegenSettings(bpy.types.PropertyGroup):
         min=0.0, max=10.0, default=2.0,
         update=_settings_changed,
     )
-    use_projection: bpy.props.BoolProperty(
-        name="Opposite Projection",
-        description=("Place locked-chain flow endpoints at closest-point "
-                     "projections; disable to copy the locked arc ratios "
-                     "instead"),
-        default=True,
-        update=_settings_changed,
-    )
 
 
 class MESH_OT_milky_regen_request(bpy.types.Operator):
@@ -1009,9 +981,6 @@ class VIEW3D_PT_milky_regen(bpy.types.Panel):
         col.prop(settings, "flow_count")
         col.prop(settings, "curvature_bias")
         layout.prop(settings, "influence")
-        lock_col = layout.column()
-        lock_col.enabled = bool(_session.locked)
-        lock_col.prop(settings, "use_projection")
         if _session.message:
             layout.label(text=_session.message, icon='ERROR')
         row = layout.row()
@@ -1047,13 +1016,6 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
                      "vertex influences (0 = constrained flows only)"),
         min=0.0, max=10.0, default=2.0,
     )
-    use_projection: bpy.props.BoolProperty(
-        name="Opposite Projection",
-        description=("Place locked-chain flow endpoints at closest-point "
-                     "projections; disable to copy the locked arc ratios "
-                     "instead"),
-        default=True,
-    )
 
     @classmethod
     def poll(cls, context):
@@ -1067,8 +1029,7 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
         try:
             count = self.flow_count if self.flow_count >= 2 else None
             run_regeneration(obj, count, self.curvature_bias,
-                             influence=self.influence,
-                             use_projection=self.use_projection)
+                             influence=self.influence)
         except StripError as exc:
             self.report({'ERROR'},
                         bpy.app.translations.pgettext_rpt(exc.message))
@@ -1091,7 +1052,6 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
         session = _Session(obj, data)
         session.bias = self.curvature_bias
         session.influence = self.influence
-        session.use_projection = self.use_projection
         if self.flow_count >= 2:
             session.count = self.flow_count
         _session = session

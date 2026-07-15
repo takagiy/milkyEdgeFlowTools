@@ -325,12 +325,6 @@ _translations = {
             "生成する交差フローの本数（0 = 近い密度を維持）",
         ("*", "Curvature Bias"): "曲率バイアス",
         ("*", "Influence"): "影響範囲",
-        ("*", "Opposite Projection"): "対岸投影",
-        ("*", "Place locked-chain flow endpoints at closest-point "
-              "projections; disable to copy the locked arc ratios "
-              "instead"):
-            "ロックチェーンのフロー端点を最近接点投影で配置する。"
-            "無効にすると弧長比率のコピーを使う",
         ("*", "How many neighboring flows a locked or dragged vertex "
               "influences (0 = constrained flows only)"):
             "ロック/ドラッグした頂点が影響する近隣フローの"
