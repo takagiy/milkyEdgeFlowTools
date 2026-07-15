@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.3.0...v0.3.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* revert spiral extrapolation and crowding protection ([292a2df](https://github.com/takagiy/milkyEdgeFlowTools/commit/292a2df095efc8215c715f5629f41df5e7b4e1cc))
+
 ## [0.3.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.2.0...v0.3.0) (2026-07-14)
 
 
