@@ -465,11 +465,29 @@ class TestOppositeShore(unittest.TestCase):
         rail = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
                                closed=False)
         locked = [(2.0, 0.0, 0.0), (2.0, 1.0, 0.0),
-                  (4.0, 1.0, 0.0), (4.0, 4.0, 0.0)]
+                  (4.0, 1.2, 0.0), (4.0, 4.0, 0.0)]
         params = opposite_shore_params(locked, rail)
         self.assertAlmostEqual(params[0], 0.0, delta=1e-9)
         self.assertAlmostEqual(params[-1], rail.total_length, delta=1e-9)
         self.assertAlmostEqual(params[1], 1.0, delta=0.05)
+        self.assertAlmostEqual(params[2], 1.2, delta=0.05)
+        for a, b in zip(params, params[1:]):
+            self.assertGreater(b, a)
+
+    def test_saturated_tail_redistributed_by_ratios(self):
+        # The chain extends past the rail: its last two points both
+        # project onto the rail endpoint. The saturated vertex must be
+        # re-spread by the chain's arc ratios instead of collapsing.
+        rail = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                               closed=False)
+        locked = [(2.0, 0.0, 0.0), (2.0, 2.0, 0.0),
+                  (2.0, 5.0, 0.0), (2.0, 7.0, 0.0)]
+        ratios = [0.0, 2.0 / 7.0, 5.0 / 7.0, 1.0]
+        params = opposite_shore_params(locked, rail, clamp_ends=False,
+                                       ratios=ratios)
+        self.assertAlmostEqual(params[1], 2.0, delta=0.05)
+        self.assertAlmostEqual(params[2], 3.2, delta=0.05)
+        self.assertAlmostEqual(params[3], 4.0, delta=1e-6)
         for a, b in zip(params, params[1:]):
             self.assertGreater(b, a)
 

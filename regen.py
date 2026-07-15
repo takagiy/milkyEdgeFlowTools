@@ -282,8 +282,11 @@ def generate(data, count, bias, locked_rails=(), constraints=None):
             for rj in locked_rails:
                 curve = data.curves[rj]
                 points = [curve.point_at(s) for s in curve.knot_params]
+                knot_ratios = [s / curve.total_length
+                               for s in curve.knot_params]
                 projections.append(core.opposite_shore_params(
-                    points, data.curves[side], clamp_ends=False))
+                    points, data.curves[side], clamp_ends=False,
+                    ratios=knot_ratios))
             for i in range(flow_total):
                 merged.setdefault(
                     (i, side),
