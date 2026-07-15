@@ -337,7 +337,38 @@ def compose_flows(data, count, bias, locked_rails=(), constraints=None,
         constrained_rows[i] = core.smooth_flow_on_rails(
             data.curves, params, pinned)
 
-    flows = core.propagate_flow_constraints(base, constrained_rows,
+    # End rows: their "ideal" position is where the flow field would put
+    # them if the strip boundary did not exist — the locked endpoints
+    # projected onto the (tangent-extended) rail curves. Replacing the end
+    # rows' base params with these ideals turns the boundary offset into a
+    # nonzero delta that the propagation blends over ~Influence bands
+    # (Influence 0 disables the whole effect). Capped to twice the local
+    # band so a wild projection cannot fling the neighbors.
+    prop_base = base
+    if locked_rails and len(base) >= 2:
+        prop_base = [list(flow) for flow in base]
+        last = len(base) - 1
+        for row, knot_index in ((0, 0), (last, -1)):
+            for rj in range(rail_count):
+                if rj in locked_rails:
+                    continue
+                curve = data.curves[rj]
+                resolved = 0.0 if row == 0 else curve.total_length
+                ideals = []
+                for lk in locked_rails:
+                    locked_curve = data.curves[lk]
+                    point = locked_curve.point_at(
+                        locked_curve.knot_params[knot_index])
+                    s, _dist = curve.closest_param_to_point(
+                        point, extend=0.5 * curve.total_length)
+                    ideals.append(s)
+                ideal = sum(ideals) / len(ideals)
+                neighbor = base[1][rj] if row == 0 else base[last - 1][rj]
+                band = abs(neighbor - resolved)
+                delta = min(max(resolved - ideal, -2.0 * band), 2.0 * band)
+                prop_base[row][rj] = resolved - delta
+
+    flows = core.propagate_flow_constraints(prop_base, constrained_rows,
                                             influence)
     # Keep each rail's rows ordered and on the curve.
     for rj, curve in enumerate(data.curves):

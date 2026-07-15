@@ -146,6 +146,16 @@ class TestCatmullRomCurve(unittest.TestCase):
         for a, b in zip(curve.knot_params, curve.knot_params[1:]):
             self.assertLess(a, b)
 
+    def test_closest_param_to_point_extension(self):
+        curve, _ = straight_curve()  # along X, length 10
+        s, _d = curve.closest_param_to_point((12.0, 1.0, 0.0))
+        self.assertAlmostEqual(s, 10.0, delta=1e-6)
+        s, d = curve.closest_param_to_point((12.0, 1.0, 0.0), extend=5.0)
+        self.assertAlmostEqual(s, 12.0, delta=0.05)
+        self.assertAlmostEqual(d, 1.0, delta=0.01)
+        s, _d = curve.closest_param_to_point((-3.0, 0.5, 0.0), extend=5.0)
+        self.assertAlmostEqual(s, -3.0, delta=0.05)
+
     def test_closest_param_to_ray_hit(self):
         curve, _ = straight_curve()
         s, dist = curve.closest_param_to_ray((3, 5, 0), (0, -1, 0))

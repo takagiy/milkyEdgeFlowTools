@@ -303,6 +303,39 @@ def test_regenerate_denser_count():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
+def test_regenerate_end_delta_from_slanted_end():
+    """A slanted strip end: the locked endpoints' ideal positions differ
+    from the rail ends, and the propagation blends that offset into the
+    neighboring flows (Influence 0 disables it)."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    for v in obj.data.vertices:
+        if abs(v.co.y - (REG_ROWS - 1)) < 1e-6:
+            v.co.y += 0.4 * v.co.x
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    data = milky_regen.analyze_strip(bm)
+    x_of = [round(c.point_at(0.0)[0], 3) for c in data.curves]
+    locked = x_of.index(4.0)
+    other = x_of.index(1.0)
+    count = len(data.rails[locked])
+    merged = milky_regen.default_end_constraints(data, count)
+
+    base = milky_regen.generate(data, count, 0.0, (locked,))
+    inert = milky_regen.compose_flows(data, count, 0.0, (locked,),
+                                      merged, influence=0.0)
+    blended = milky_regen.compose_flows(data, count, 0.0, (locked,),
+                                        merged, influence=2.0)
+
+    row = count - 2
+    assert abs(inert[row][other] - base[row][other]) < 1e-6, \
+        "influence 0 must keep the base"
+    moved = abs(blended[row][other] - base[row][other])
+    assert moved > 0.05, f"end delta did not propagate (moved {moved})"
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
 def test_regenerate_rejects_single_chain():
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -362,6 +395,7 @@ def main():
     test_regenerate_moved_end_row()
     test_regenerate_three_rails()
     test_regenerate_denser_count()
+    test_regenerate_end_delta_from_slanted_end()
     test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()
