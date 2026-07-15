@@ -200,6 +200,28 @@ class CatmullRomCurve:
         u = 0.0 if span < 1.0e-12 else (s - cum[j]) / span
         return _lerp(self._samples[j], self._samples[j + 1], u)
 
+    def closest_param_to_point(self, point):
+        """Arc-length param of the curve point closest to `point`.
+
+        Returns (s, distance).
+        """
+        samples, cum = self._samples, self._cum
+        best_s, best_dist = 0.0, math.inf
+        for j in range(len(samples) - 1):
+            a = samples[j]
+            ab = _sub(samples[j + 1], a)
+            denom = _dot(ab, ab)
+            if denom < 1.0e-18:
+                u = 0.0
+            else:
+                u = min(max(_dot(ab, _sub(point, a)) / denom, 0.0), 1.0)
+            candidate = _add(a, _mul(ab, u))
+            dist = math.dist(candidate, point)
+            if dist < best_dist:
+                best_dist = dist
+                best_s = cum[j] + u * (cum[j + 1] - cum[j])
+        return best_s, best_dist
+
     def closest_param_to_ray(self, origin, direction):
         """Arc-length param of the curve point closest to the ray.
 
@@ -425,6 +447,174 @@ def order_chains(dominant_sets):
         order.append(ready[0])
         placed.add(ready[0])
     return order
+
+
+# ---------------------------------------------------------------------------
+# Regeneration core (M1) — see requirements.md chapter 11
+# ---------------------------------------------------------------------------
+
+def order_rails(count, adjacency_pairs):
+    """Order rails into a row using crossing adjacency between them.
+
+    adjacency_pairs are unordered (a, b) rail-index pairs that share
+    crossing flows. Returns the ordered rail indices, or None when the
+    adjacency does not form a single simple path (branching, cycles, or
+    disconnected selections).
+    """
+    if count == 0:
+        return []
+    if count == 1:
+        return [0]
+    adjacency = {i: set() for i in range(count)}
+    for a, b in adjacency_pairs:
+        if a == b:
+            continue
+        adjacency[a].add(b)
+        adjacency[b].add(a)
+    ends = [i for i in range(count) if len(adjacency[i]) == 1]
+    if len(ends) != 2 or any(len(n) > 2 for n in adjacency.values()):
+        return None
+    order = [ends[0]]
+    prev, cur = None, ends[0]
+    while True:
+        nxts = [x for x in adjacency[cur] if x != prev]
+        if not nxts:
+            break
+        prev, cur = cur, nxts[0]
+        order.append(cur)
+    return order if len(order) == count else None
+
+
+def _curvature_profile(curve, resolution):
+    """Smoothed curvature at uniform normalized-arc positions.
+
+    Returns (profile, total_turning_angle). The total turning angle (in
+    radians) tells callers whether the curve is effectively straight.
+    """
+    samples = curve._samples
+    cum = curve._cum
+    n = len(samples)
+    if n < 3 or curve.total_length <= 0.0:
+        return [0.0] * resolution, 0.0
+
+    kappas = [0.0] * n
+    total_turn = 0.0
+    for j in range(1, n - 1):
+        v1 = _sub(samples[j], samples[j - 1])
+        v2 = _sub(samples[j + 1], samples[j])
+        l1, l2 = _length(v1), _length(v2)
+        if l1 < 1.0e-12 or l2 < 1.0e-12:
+            continue
+        cosang = min(max(_dot(v1, v2) / (l1 * l2), -1.0), 1.0)
+        angle = math.acos(cosang)
+        total_turn += angle
+        kappas[j] = angle / ((l1 + l2) / 2.0)
+    kappas[0] = kappas[1]
+    kappas[-1] = kappas[-2]
+    smoothed = [(kappas[max(j - 1, 0)] + kappas[j]
+                 + kappas[min(j + 1, n - 1)]) / 3.0 for j in range(n)]
+
+    length = curve.total_length
+    profile = []
+    for i in range(resolution):
+        s = length * i / (resolution - 1)
+        j = min(max(bisect_right(cum, s) - 1, 0), n - 2)
+        span = cum[j + 1] - cum[j]
+        u = 0.0 if span < 1.0e-12 else (s - cum[j]) / span
+        profile.append(smoothed[j] + (smoothed[j + 1] - smoothed[j]) * u)
+    return profile, total_turn
+
+
+def common_sample_ratios(curves, count, bias, resolution=128):
+    """Arc-length ratios shared by all curves for subdividing rails.
+
+    Density is w(t) = (1 - bias) + bias * normalized curvature, averaged
+    over the curves so paired rails are sampled at the same quantiles and
+    the flows stay parallel. Effectively straight curves fall back to a
+    uniform density. Endpoints 0 and 1 are always included.
+    """
+    count = max(2, count)
+    bias = min(max(bias, 0.0), 1.0)
+
+    profiles = []
+    for curve in curves:
+        profile, total_turn = _curvature_profile(curve, resolution)
+        mean = sum(profile) / len(profile)
+        if total_turn < 0.01 or mean < 1.0e-12:
+            profiles.append([1.0] * resolution)
+        else:
+            profiles.append([k / mean for k in profile])
+    averaged = [sum(p[i] for p in profiles) / len(profiles)
+                for i in range(resolution)]
+    weights = [max((1.0 - bias) + bias * a, 1.0e-4) for a in averaged]
+
+    cumulative = [0.0]
+    for i in range(1, resolution):
+        cumulative.append(cumulative[-1] + (weights[i - 1] + weights[i]) / 2)
+
+    ratios = []
+    for i in range(count):
+        q = cumulative[-1] * i / (count - 1)
+        j = min(max(bisect_right(cumulative, q) - 1, 0), resolution - 2)
+        span = cumulative[j + 1] - cumulative[j]
+        u = 0.0 if span < 1.0e-12 else (q - cumulative[j]) / span
+        ratios.append((j + u) / (resolution - 1))
+    ratios[0] = 0.0
+    ratios[-1] = 1.0
+    return ratios
+
+
+def smooth_flow_on_rails(rails, params, pinned, iterations=10):
+    """Slide flow vertices along their rail curves to minimize bending.
+
+    params[j] is the arc-length position of the flow vertex on rails[j].
+    Each free vertex is pulled toward the point on its own rail closest to
+    the midpoint of its neighbors (rail-constrained Laplacian smoothing),
+    so vertices always stay on their rail curves. Pinned vertices (always
+    including both endpoints, per the caller) do not move.
+    """
+    m = len(rails)
+    out = list(params)
+    if m < 3:
+        return out
+    for _ in range(max(1, iterations)):
+        for j in range(1, m - 1):
+            if pinned[j]:
+                continue
+            a = rails[j - 1].point_at(out[j - 1])
+            b = rails[j + 1].point_at(out[j + 1])
+            out[j], _ = rails[j].closest_param_to_point(_lerp(a, b, 0.5))
+    return out
+
+
+def generate_flows(rails, count, bias=0.5, locked_ratios=None,
+                   constraints=None, iterations=10):
+    """Generate crossing flows across ordered rail curves.
+
+    rails: CatmullRomCurve list in row order (outermost first and last).
+    locked_ratios: when given (locked chain), these normalized arc ratios
+    replace both `count` and the density sampling.
+    constraints: optional {(flow_index, rail_index): arc_param} pass-through
+    points (dragged/locked vertices); they are pinned during smoothing.
+    Returns one list of per-rail arc-length params for each flow.
+    """
+    if locked_ratios is not None:
+        ratios = list(locked_ratios)
+    else:
+        ratios = common_sample_ratios([rails[0], rails[-1]], count, bias)
+    constraints = constraints or {}
+
+    flows = []
+    for i, ratio in enumerate(ratios):
+        params = [ratio * rail.total_length for rail in rails]
+        pinned = [False] * len(rails)
+        pinned[0] = pinned[-1] = True
+        for (flow_i, rail_j), s in constraints.items():
+            if flow_i == i:
+                params[rail_j] = s
+                pinned[rail_j] = True
+        flows.append(smooth_flow_on_rails(rails, params, pinned, iterations))
+    return flows
 
 
 # ---------------------------------------------------------------------------

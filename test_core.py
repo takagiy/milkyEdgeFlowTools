@@ -41,6 +41,13 @@ Integration (relax_chain):
   [x] relax_chain_step on a fixed curve matches relax_chain
   [x] relax_chain_step is idempotent once converged
   [x] extra iterations do not change an already-converged result
+Regeneration core (M1):
+  [x] order_rails orders a path from unordered adjacency; rejects branches
+  [x] common_sample_ratios: straight rails -> uniform; bias 0 -> uniform
+  [x] common_sample_ratios: bias 1 packs samples around a corner
+  [x] smooth_flow_on_rails straightens a kinked flow; pins hold
+  [x] generate_flows builds a uniform grid; locked ratios and vertex
+      constraints are honored
 """
 
 import math
@@ -49,13 +56,17 @@ import unittest
 import core
 from core import (
     CatmullRomCurve,
+    common_sample_ratios,
     compute_vertex_target,
     decompose_chains,
     enforce_min_spacing,
     flow_direction,
+    generate_flows,
     order_chains,
+    order_rails,
     relax_chain,
     relax_chain_step,
+    smooth_flow_on_rails,
     solve_relaxed_params,
 )
 
@@ -312,6 +323,106 @@ class TestRelaxChain(unittest.TestCase):
                            stiffness=1.0, factor=1.0, iterations=10)
         for a, b in zip(once, many):
             self.assertLess(vlen(a, b), 1e-3)
+
+
+def straight_rails(count=3, spacing=1.0, length=4):
+    """Vertical straight rails in the XZ..: x = i*spacing, y in [0, length]."""
+    rails = []
+    for i in range(count):
+        pts = [(i * spacing, float(y), 0.0) for y in range(length + 1)]
+        rails.append(CatmullRomCurve(pts, closed=False))
+    return rails
+
+
+class TestOrderRails(unittest.TestCase):
+    def test_orders_a_path(self):
+        order = order_rails(3, [(2, 1), (0, 2)])
+        self.assertIn(order, ([0, 2, 1], [1, 2, 0]))
+
+    def test_rejects_branch(self):
+        self.assertIsNone(order_rails(4, [(0, 1), (0, 2), (0, 3)]))
+
+    def test_rejects_disconnected(self):
+        self.assertIsNone(order_rails(4, [(0, 1), (2, 3)]))
+
+    def test_trivial(self):
+        self.assertEqual(order_rails(1, []), [0])
+        self.assertIn(order_rails(2, [(0, 1)]), ([0, 1], [1, 0]))
+
+
+class TestSampleRatios(unittest.TestCase):
+    def test_straight_rails_uniform(self):
+        rails = straight_rails(2)
+        ratios = common_sample_ratios([rails[0], rails[1]], 5, bias=0.5)
+        self.assertEqual(len(ratios), 5)
+        for got, want in zip(ratios, [0.0, 0.25, 0.5, 0.75, 1.0]):
+            self.assertAlmostEqual(got, want, delta=0.02)
+
+    def test_bias_zero_uniform_even_when_curved(self):
+        bent = CatmullRomCurve([(0, 0, 0), (1, 0, 0), (2, 0, 0),
+                                (2, 1, 0), (2, 2, 0)], closed=False)
+        ratios = common_sample_ratios([bent, bent], 5, bias=0.0)
+        for got, want in zip(ratios, [0.0, 0.25, 0.5, 0.75, 1.0]):
+            self.assertAlmostEqual(got, want, delta=0.02)
+
+    def test_full_bias_packs_around_corner(self):
+        # L-shaped rail: the corner sits near the middle of the arc length,
+        # so with bias 1 the gaps around the middle must shrink well below
+        # the uniform gap.
+        bent = CatmullRomCurve([(0, 0, 0), (1, 0, 0), (2, 0, 0),
+                                (2, 1, 0), (2, 2, 0)], closed=False)
+        ratios = common_sample_ratios([bent, bent], 7, bias=1.0)
+        self.assertAlmostEqual(ratios[0], 0.0, delta=1e-9)
+        self.assertAlmostEqual(ratios[-1], 1.0, delta=1e-9)
+        for a, b in zip(ratios, ratios[1:]):
+            self.assertGreater(b, a)
+        uniform_gap = 1.0 / 6.0
+        mid_gaps = [b - a for a, b in zip(ratios, ratios[1:])
+                    if a > 0.25 and b < 0.75]
+        self.assertTrue(mid_gaps)
+        self.assertLess(min(mid_gaps), uniform_gap * 0.8)
+
+
+class TestFlowSmoothing(unittest.TestCase):
+    def test_straightens_kinked_flow(self):
+        rails = straight_rails(3)
+        # Endpoints at y=1 (left) and y=3 (right); middle starts at y=0.
+        params = smooth_flow_on_rails(rails, [1.0, 0.0, 3.0],
+                                      [True, False, True])
+        self.assertAlmostEqual(params[1], 2.0, delta=0.05)
+
+    def test_pinned_middle_stays(self):
+        rails = straight_rails(3)
+        params = smooth_flow_on_rails(rails, [1.0, 0.0, 3.0],
+                                      [True, True, True])
+        self.assertAlmostEqual(params[1], 0.0, delta=1e-9)
+
+
+class TestGenerateFlows(unittest.TestCase):
+    def test_uniform_grid(self):
+        rails = straight_rails(3)
+        flows = generate_flows(rails, count=5, bias=0.5)
+        self.assertEqual(len(flows), 5)
+        for i, flow in enumerate(flows):
+            self.assertEqual(len(flow), 3)
+            for j, s in enumerate(flow):
+                self.assertAlmostEqual(s, float(i), delta=0.05)
+
+    def test_locked_ratios_override_count(self):
+        rails = straight_rails(3)
+        flows = generate_flows(rails, count=99, bias=0.5,
+                               locked_ratios=[0.0, 0.1, 1.0])
+        self.assertEqual(len(flows), 3)
+        self.assertAlmostEqual(flows[1][0], 0.4, delta=0.05)  # 0.1 * len 4
+        self.assertAlmostEqual(flows[1][2], 0.4, delta=0.05)
+
+    def test_vertex_constraint_is_honored(self):
+        rails = straight_rails(3)
+        flows = generate_flows(rails, count=5, bias=0.5,
+                               constraints={(1, 1): 3.5})
+        self.assertAlmostEqual(flows[1][1], 3.5, delta=1e-9)
+        # Other flows unaffected.
+        self.assertAlmostEqual(flows[2][1], 2.0, delta=0.05)
 
 
 if __name__ == "__main__":
