@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.4.1...v0.5.0) (2026-07-15)
+
+
+### Features
+
+* constraint propagation and default end-row locks ([b33923c](https://github.com/takagiy/milkyEdgeFlowTools/commit/b33923cfab171edd375b303c00efaab947a17dc6))
+
 ## [0.4.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.4.0...v0.4.1) (2026-07-15)
 
 
