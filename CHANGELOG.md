@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.5.0...v0.5.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* redistribute saturated opposite-shore projections ([0da26fe](https://github.com/takagiy/milkyEdgeFlowTools/commit/0da26fe37da9cfbad2973e22091a6491228ce744))
+
 ## [0.5.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.4.1...v0.5.0) (2026-07-15)
 
 
