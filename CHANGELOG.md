@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.4.0...v0.4.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* place locked-chain flow endpoints at geometric opposites ([8512677](https://github.com/takagiy/milkyEdgeFlowTools/commit/85126771669d8254a05b144bec6c40f2706cee2c))
+
 ## [0.4.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.3.1...v0.4.0) (2026-07-15)
 
 
