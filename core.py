@@ -750,77 +750,108 @@ def blend_flow_curve(points_a, points_b, weight, start, end, samples=32):
     return result
 
 
-def bisect_flows(curves, locked_index, samples=32):
-    """Flow params by recursive midpoint blending (one outer rail locked).
+def bisect_flows(curves, anchors, samples=32):
+    """Flow params by recursive midpoint blending between anchor rails.
 
-    The end rows sit on the rail endpoints. For the row halfway (by
-    index) between two resolved rows: blend the two resolved flows
-    (chord-normalized, weighted by the locked chain's arc position), aim
-    the blended chord direction from the locked vertex to find the far
-    endpoint on the opposite outer rail, fit the blended shape between
-    those two points, and place the intermediate-rail vertices at the
-    fitted curve's closest points. Recurses until every row is resolved.
+    anchors maps rail indices to per-flow arc params on that rail (locked
+    chains use their knots; without locks the caller anchors both outer
+    rails with density-sampled params). The rail row is split into
+    segments at the anchor rails and each segment is resolved
+    independently:
+
+    - both ends anchored: each row's endpoints are known; the two
+      resolved neighbor flows are blended (chord-normalized) and fitted
+      directly between them.
+    - one end anchored (a free outer rail beyond the last anchor): the
+      blended chord direction is aimed from the anchor vertex and the far
+      endpoint is the ray's closest point on the free outer rail.
+
+    Rows resolve by recursive bisection (weights follow the anchors' arc
+    positions) and every value is clamped between its resolved neighbors.
     Returns the [flow][rail] arc-param matrix.
     """
     rail_count = len(curves)
-    far_index = rail_count - 1 if locked_index == 0 else 0
-    locked_curve = curves[locked_index]
-    far_curve = curves[far_index]
-    knots = locked_curve.knot_params
-    n = len(knots)
-    order = (list(range(rail_count)) if locked_index == 0
-             else list(range(rail_count - 1, -1, -1)))
+    anchor_indices = sorted(anchors)
+    n = len(anchors[anchor_indices[0]])
 
     params = [[0.0] * rail_count for _ in range(n)]
     for rj in range(rail_count):
         params[n - 1][rj] = curves[rj].total_length
+    for rj, values in anchors.items():
+        for i in range(n):
+            params[i][rj] = values[i]
 
-    def row_points(i):
-        return [curves[rj].point_at(params[i][rj]) for rj in order]
+    def resolve_segment(rail_order, aimed):
+        """rail_order runs from an anchored rail toward the segment end;
+        `aimed` is True when the far end is a free outer rail."""
+        start_rail = rail_order[0]
+        far_rail = rail_order[-1]
+        start_curve = curves[start_rail]
+        far_curve = curves[far_rail]
 
-    def resolve(lo, hi):
-        if hi - lo < 2:
-            return
-        mid = (lo + hi) // 2
-        span = knots[hi] - knots[lo]
-        weight = (knots[mid] - knots[lo]) / span if span > 1.0e-12 else 0.5
-        pts_lo = row_points(lo)
-        pts_hi = row_points(hi)
-        start = locked_curve.point_at(knots[mid])
+        def row_points(i):
+            return [curves[rj].point_at(params[i][rj]) for rj in rail_order]
 
-        dir_lo = _normalize(_sub(pts_lo[-1], pts_lo[0]))
-        dir_hi = _normalize(_sub(pts_hi[-1], pts_hi[0]))
-        if dir_lo is not None and dir_hi is not None:
-            direction = _normalize(_lerp(dir_lo, dir_hi, weight))
-        else:
-            direction = dir_lo if dir_lo is not None else dir_hi
+        def resolve(lo, hi):
+            if hi - lo < 2:
+                return
+            mid = (lo + hi) // 2
+            span = params[hi][start_rail] - params[lo][start_rail]
+            weight = ((params[mid][start_rail] - params[lo][start_rail])
+                      / span if abs(span) > 1.0e-12 else 0.5)
+            if not aimed:
+                span_far = params[hi][far_rail] - params[lo][far_rail]
+                if abs(span_far) > 1.0e-12:
+                    weight = (weight
+                              + (params[mid][far_rail]
+                                 - params[lo][far_rail]) / span_far) / 2.0
+            pts_lo = row_points(lo)
+            pts_hi = row_points(hi)
+            start = start_curve.point_at(params[mid][start_rail])
 
-        far_lo = params[lo][far_index]
-        far_hi = params[hi][far_index]
-        if direction is not None:
-            s_far, _dist = far_curve.closest_param_to_ray(start, direction)
-        else:
-            s_far = far_lo + weight * (far_hi - far_lo)
-        margin = 1.0e-3 * max(far_hi - far_lo, 1.0e-9)
-        s_far = min(max(s_far, far_lo + margin), far_hi - margin)
-        end = far_curve.point_at(s_far)
+            if aimed:
+                dir_lo = _normalize(_sub(pts_lo[-1], pts_lo[0]))
+                dir_hi = _normalize(_sub(pts_hi[-1], pts_hi[0]))
+                if dir_lo is not None and dir_hi is not None:
+                    direction = _normalize(_lerp(dir_lo, dir_hi, weight))
+                else:
+                    direction = dir_lo if dir_lo is not None else dir_hi
+                far_lo = params[lo][far_rail]
+                far_hi = params[hi][far_rail]
+                if direction is not None:
+                    s_far, _dist = far_curve.closest_param_to_ray(
+                        start, direction)
+                else:
+                    s_far = far_lo + weight * (far_hi - far_lo)
+                margin = 1.0e-3 * max(far_hi - far_lo, 1.0e-9)
+                s_far = min(max(s_far, far_lo + margin), far_hi - margin)
+                params[mid][far_rail] = s_far
+            end = far_curve.point_at(params[mid][far_rail])
 
-        fitted = blend_flow_curve(pts_lo, pts_hi, weight, start, end,
-                                  samples)
-        params[mid][locked_index] = knots[mid]
-        params[mid][far_index] = s_far
-        for rj in range(rail_count):
-            if rj in (locked_index, far_index):
-                continue
-            s_j, _dist = curves[rj].closest_param_to_polyline(fitted)
-            lo_j = params[lo][rj]
-            hi_j = params[hi][rj]
-            gap = 1.0e-3 * max(hi_j - lo_j, 1.0e-9)
-            params[mid][rj] = min(max(s_j, lo_j + gap), hi_j - gap)
-        resolve(lo, mid)
-        resolve(mid, hi)
+            fitted = blend_flow_curve(pts_lo, pts_hi, weight, start, end,
+                                      samples)
+            for rj in rail_order[1:-1]:
+                s_j, _dist = curves[rj].closest_param_to_polyline(fitted)
+                lo_j = params[lo][rj]
+                hi_j = params[hi][rj]
+                gap = 1.0e-3 * max(hi_j - lo_j, 1.0e-9)
+                params[mid][rj] = min(max(s_j, lo_j + gap), hi_j - gap)
+            resolve(lo, mid)
+            resolve(mid, hi)
 
-    resolve(0, n - 1)
+        resolve(0, n - 1)
+
+    # Free outer segments (aimed away from the outermost anchors).
+    if anchor_indices[0] > 0:
+        resolve_segment(list(range(anchor_indices[0], -1, -1)), aimed=True)
+    if anchor_indices[-1] < rail_count - 1:
+        resolve_segment(list(range(anchor_indices[-1], rail_count)),
+                        aimed=True)
+    # Segments between consecutive anchors (both ends known); adjacent
+    # anchors leave nothing to resolve.
+    for a, b in zip(anchor_indices, anchor_indices[1:]):
+        if b - a >= 2:
+            resolve_segment(list(range(a, b + 1)), aimed=False)
     return params
 
 
@@ -845,36 +876,6 @@ def smooth_flow_on_rails(rails, params, pinned, iterations=10):
             b = rails[j + 1].point_at(out[j + 1])
             out[j], _ = rails[j].closest_param_to_point(_lerp(a, b, 0.5))
     return out
-
-
-def generate_flows(rails, count, bias=0.5, locked_ratios=None,
-                   constraints=None, iterations=10):
-    """Generate crossing flows across ordered rail curves.
-
-    rails: CatmullRomCurve list in row order (outermost first and last).
-    locked_ratios: when given (locked chain), these normalized arc ratios
-    replace both `count` and the density sampling.
-    constraints: optional {(flow_index, rail_index): arc_param} pass-through
-    points (dragged/locked vertices); they are pinned during smoothing.
-    Returns one list of per-rail arc-length params for each flow.
-    """
-    if locked_ratios is not None:
-        ratios = list(locked_ratios)
-    else:
-        ratios = common_sample_ratios([rails[0], rails[-1]], count, bias)
-    constraints = constraints or {}
-
-    flows = []
-    for i, ratio in enumerate(ratios):
-        params = [ratio * rail.total_length for rail in rails]
-        pinned = [False] * len(rails)
-        pinned[0] = pinned[-1] = True
-        for (flow_i, rail_j), s in constraints.items():
-            if flow_i == i:
-                params[rail_j] = s
-                pinned[rail_j] = True
-        flows.append(smooth_flow_on_rails(rails, params, pinned, iterations))
-    return flows
 
 
 # ---------------------------------------------------------------------------

@@ -303,6 +303,31 @@ def test_regenerate_denser_count():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
+def test_regenerate_locked_intermediate_rail():
+    """Locking the middle rail splits the strip into two aimed segments;
+    the locked rail keeps its original vertices."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 2, 4), REG_COLS, REG_ROWS)
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    data = milky_regen.analyze_strip(bm)
+    x_mid = [round(c.point_at(0.0)[0], 3) for c in data.curves].index(2.0)
+    count = milky_regen.run_regeneration(obj, locked_rails=(x_mid,))
+    assert count == REG_ROWS, f"flow count {count}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    for x in (1.0, 2.0, 4.0):
+        ys = sorted(round(v.co.y, 3) for v in bm.verts
+                    if abs(v.co.x - x) < 1e-4)
+        assert ys == [0.0, 1.0, 2.0, 3.0, 4.0], (x, ys)
+    assert len(bm.verts) == 27, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 16, f"face count {len(bm.faces)}"
+    assert not any(len(e.link_faces) > 2 for e in bm.edges), "non-manifold"
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
 def test_regenerate_rejects_single_chain():
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -362,6 +387,7 @@ def main():
     test_regenerate_moved_end_row()
     test_regenerate_three_rails()
     test_regenerate_denser_count()
+    test_regenerate_locked_intermediate_rail()
     test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()

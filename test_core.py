@@ -51,7 +51,7 @@ Regeneration core (M1):
   [x] common_sample_ratios: straight rails -> uniform; bias 0 -> uniform
   [x] common_sample_ratios: bias 1 packs samples around a corner
   [x] smooth_flow_on_rails straightens a kinked flow; pins hold
-  [x] generate_flows builds a uniform grid; locked ratios and vertex
+  [x] bisect_flows resolves anchored segments; locked ratios and vertex
       constraints are honored
 """
 
@@ -66,7 +66,6 @@ from core import (
     decompose_chains,
     enforce_min_spacing,
     flow_direction,
-    generate_flows,
     bisect_flows,
     order_chains,
     order_rails,
@@ -456,7 +455,7 @@ class TestPropagation(unittest.TestCase):
 class TestBisectFlows(unittest.TestCase):
     def test_uniform_parallel_rails_match_knots(self):
         rails = straight_rails(3)  # x = 0,1,2; y in [0,4]; uniform knots
-        flows = bisect_flows(rails, locked_index=0)
+        flows = bisect_flows(rails, {0: [0.0, 1.0, 2.0, 3.0, 4.0]})
         self.assertEqual(len(flows), 5)
         for i, flow in enumerate(flows):
             for rj, s in enumerate(flow):
@@ -467,7 +466,8 @@ class TestBisectFlows(unittest.TestCase):
                                  closed=False)          # length 4
         far = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(9)],
                               closed=False)             # length 8
-        flows = bisect_flows([locked, far], locked_index=0)
+        flows = bisect_flows([locked, far],
+                             {0: [0.0, 1.0, 2.0, 3.0, 4.0]})
         # Middle row: blended direction of the two end chords, aimed from
         # (0, 2), lands at y ~ 3.24 on the far rail (ratio copy would say
         # 4.0).
@@ -485,55 +485,51 @@ class TestBisectFlows(unittest.TestCase):
                                   (1.0, 4.0, 0.0)], closed=False)
         far = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(5)],
                               closed=False)
-        flows = bisect_flows([locked, middle, far], locked_index=0)
+        flows = bisect_flows([locked, middle, far],
+                             {0: [0.0, 1.0, 2.0, 3.0, 4.0]})
         # Row 0 bows down to (1, -0.5); row 4 is straight. The middle row
         # blends half the bow: fitted point (1, 1.75) -> middle-rail arc
         # 1.75 - (-0.5) = 2.25.
         self.assertAlmostEqual(flows[2][1], 2.25, delta=0.12)
 
-
-class TestGenerateFlows(unittest.TestCase):
-    def test_uniform_grid(self):
-        rails = straight_rails(3)
-        flows = generate_flows(rails, count=5, bias=0.5)
-        self.assertEqual(len(flows), 5)
+    def test_both_end_anchors_skip_the_ray(self):
+        # Both outer rails anchored (the no-lock case): the fan gets the
+        # anchored quantiles on each rail, not ray landings.
+        locked = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                                 closed=False)          # length 4
+        far = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(9)],
+                              closed=False)             # length 8
+        flows = bisect_flows(
+            [locked, far],
+            {0: [0.0, 1.0, 2.0, 3.0, 4.0],
+             1: [0.0, 2.0, 4.0, 6.0, 8.0]})
         for i, flow in enumerate(flows):
-            self.assertEqual(len(flow), 3)
-            for j, s in enumerate(flow):
+            self.assertAlmostEqual(flow[0], float(i), delta=1e-9)
+            self.assertAlmostEqual(flow[1], 2.0 * i, delta=1e-9)
+
+    def test_both_end_anchors_blend_middle_rail_shape(self):
+        # Same bowed geometry as the shape test, but anchored on both
+        # outer rails: the fit runs between known endpoints and the
+        # middle rail still receives the blended bow.
+        outer_a = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
+                                  closed=False)
+        middle = CatmullRomCurve([(1.0, -0.5, 0.0), (1.0, 0.5, 0.0),
+                                  (1.0, 1.5, 0.0), (1.0, 2.5, 0.0),
+                                  (1.0, 4.0, 0.0)], closed=False)
+        outer_b = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(5)],
+                                  closed=False)
+        anchor = [0.0, 1.0, 2.0, 3.0, 4.0]
+        flows = bisect_flows([outer_a, middle, outer_b],
+                             {0: anchor, 2: list(anchor)})
+        self.assertAlmostEqual(flows[2][1], 2.25, delta=0.12)
+
+    def test_intermediate_anchor_splits_segments(self):
+        # Anchoring the middle rail resolves both sides outward by rays.
+        rails = straight_rails(3)
+        flows = bisect_flows(rails, {1: [0.0, 1.0, 2.0, 3.0, 4.0]})
+        for i, flow in enumerate(flows):
+            for rj, s in enumerate(flow):
                 self.assertAlmostEqual(s, float(i), delta=0.05)
-
-    def test_locked_ratios_override_count(self):
-        rails = straight_rails(3)
-        flows = generate_flows(rails, count=99, bias=0.5,
-                               locked_ratios=[0.0, 0.1, 1.0])
-        self.assertEqual(len(flows), 3)
-        self.assertAlmostEqual(flows[1][0], 0.4, delta=0.05)  # 0.1 * len 4
-        self.assertAlmostEqual(flows[1][2], 0.4, delta=0.05)
-
-    def test_intermediate_rails_follow_smoothing_not_ratios(self):
-        # Ratios bind only the outer rails; a free intermediate rail must
-        # settle where the smoothing puts it, not at ratio * its length.
-        rail0 = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(5)],
-                                closed=False)   # length 4
-        rail1 = CatmullRomCurve([(1.0, float(y), 0.0) for y in range(9)],
-                                closed=False)   # length 8
-        rail2 = CatmullRomCurve([(2.0, float(y), 0.0) for y in range(9)],
-                                closed=False)   # length 8
-        flows = generate_flows([rail0, rail1, rail2], count=3,
-                               locked_ratios=[0.0, 0.25, 1.0])
-        # Endpoints at ratio 0.25: y=1 on rail0, y=2 on rail2. The smooth
-        # middle sits near their midpoint (y=1.5), not at 0.25 * 8 = 2.
-        self.assertAlmostEqual(flows[1][0], 1.0, delta=1e-6)
-        self.assertAlmostEqual(flows[1][2], 2.0, delta=1e-6)
-        self.assertAlmostEqual(flows[1][1], 1.5, delta=0.05)
-
-    def test_vertex_constraint_is_honored(self):
-        rails = straight_rails(3)
-        flows = generate_flows(rails, count=5, bias=0.5,
-                               constraints={(1, 1): 3.5})
-        self.assertAlmostEqual(flows[1][1], 3.5, delta=1e-9)
-        # Other flows unaffected.
-        self.assertAlmostEqual(flows[2][1], 2.0, delta=0.05)
 
 
 if __name__ == "__main__":

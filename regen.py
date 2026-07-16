@@ -262,39 +262,23 @@ def default_flow_count(data):
 
 
 def generate(data, count, bias, locked_rails=(), constraints=None):
-    """Generate flows: per-flow lists of arc params, one per rail."""
-    rail_count = len(data.curves)
-    # A single locked OUTER rail: recursive midpoint blending. Confirmed
-    # flows are blended (chord-normalized), the blended chord direction is
-    # aimed from the locked vertex to find the far endpoint, and the
-    # fitted shape's intersections place the intermediate rails.
-    if len(locked_rails) == 1 and locked_rails[0] in (0, rail_count - 1):
-        return core.bisect_flows(data.curves, locked_rails[0])
+    """Generate base flows via anchored midpoint blending.
 
-    locked_ratios = None
-    merged = dict(constraints or {})
+    Locked rails anchor the flows at their knots; without locks both
+    outer rails are anchored at the common curvature-density quantiles
+    (Curvature Bias applies there). Everything between the anchors is
+    resolved by core.bisect_flows.
+    """
+    curves = data.curves
+    rail_count = len(curves)
     if locked_rails:
-        ratio_lists = []
-        for rj in locked_rails:
-            curve = data.curves[rj]
-            ratio_lists.append([s / curve.total_length
-                                for s in curve.knot_params])
-        locked_ratios = [sum(rs[i] for rs in ratio_lists) / len(ratio_lists)
-                         for i in range(len(ratio_lists[0]))]
-        for rj in locked_rails:
-            for i, s in enumerate(data.curves[rj].knot_params):
-                merged.setdefault((i, rj), s)
-        # Fallback (multiple locks or a locked intermediate rail): copy
-        # the locked vertices' normalized arc ratios onto the outer rails.
-        for side in (0, rail_count - 1):
-            if side in locked_rails:
-                continue
-            side_length = data.curves[side].total_length
-            for i, ratio in enumerate(locked_ratios):
-                merged.setdefault((i, side), ratio * side_length)
-    return core.generate_flows(data.curves, count, bias=bias,
-                               locked_ratios=locked_ratios,
-                               constraints=merged)
+        anchors = {rj: list(curves[rj].knot_params) for rj in locked_rails}
+    else:
+        ratios = core.common_sample_ratios(
+            [curves[0], curves[rail_count - 1]], count, bias)
+        anchors = {rj: [r * curves[rj].total_length for r in ratios]
+                   for rj in (0, rail_count - 1)}
+    return core.bisect_flows(curves, anchors)
 
 
 def default_end_constraints(data, flow_count):
