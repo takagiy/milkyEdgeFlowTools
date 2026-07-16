@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.10.0...v0.11.0) (2026-07-16)
+
+
+### Features
+
+* add Free Side Fit switch for one-side-locked regeneration ([a3ccc8d](https://github.com/takagiy/milkyEdgeFlowTools/commit/a3ccc8df649b3a94e471f8b44957863777b87450))
+* anchored segment bisection for every lock configuration ([78a1113](https://github.com/takagiy/milkyEdgeFlowTools/commit/78a11138df588117a0ed3455e7bf6874385a393f))
+
 ## [0.10.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.9.0...v0.10.0) (2026-07-15)
 
 
