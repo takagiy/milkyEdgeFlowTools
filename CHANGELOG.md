@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.11.0...v0.12.0) (2026-07-16)
+
+
+### Features
+
+* default Free Side Fit to Ratio Copy ([2a7651b](https://github.com/takagiy/milkyEdgeFlowTools/commit/2a7651bdecddee6732394f2769b445c51f9c0e1b))
+
 ## [0.11.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.10.0...v0.11.0) (2026-07-16)
 
 
