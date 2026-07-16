@@ -261,18 +261,37 @@ def default_flow_count(data):
     return max(2, round(outer))
 
 
-def generate(data, count, bias, locked_rails=(), constraints=None):
+def generate(data, count, bias, locked_rails=(), constraints=None,
+             free_fit='RAY'):
     """Generate base flows via anchored midpoint blending.
 
     Locked rails anchor the flows at their knots; without locks both
     outer rails are anchored at the common curvature-density quantiles
     (Curvature Bias applies there). Everything between the anchors is
     resolved by core.bisect_flows.
+
+    With locks, `free_fit` picks how the unlocked outer rails are
+    reached: 'RAY' leaves them free (ray aiming), 'RATIO' anchors them
+    at the nearest locked rail's arc-length ratios, 'DENSITY' anchors
+    them at their own curvature-density quantiles.
     """
     curves = data.curves
     rail_count = len(curves)
     if locked_rails:
         anchors = {rj: list(curves[rj].knot_params) for rj in locked_rails}
+        if free_fit != 'RAY':
+            first, last = min(locked_rails), max(locked_rails)
+            for free_rj, src_rj in ((0, first), (rail_count - 1, last)):
+                if free_rj in anchors:
+                    continue
+                if free_fit == 'RATIO':
+                    src_length = curves[src_rj].total_length
+                    ratios = [s / src_length for s in anchors[src_rj]]
+                else:  # 'DENSITY'
+                    ratios = core.common_sample_ratios(
+                        [curves[free_rj]], len(anchors[src_rj]), bias)
+                anchors[free_rj] = [r * curves[free_rj].total_length
+                                    for r in ratios]
     else:
         ratios = core.common_sample_ratios(
             [curves[0], curves[rail_count - 1]], count, bias)
@@ -296,7 +315,7 @@ def default_end_constraints(data, flow_count):
 
 
 def compose_flows(data, count, bias, locked_rails=(), constraints=None,
-                  influence=2.0):
+                  influence=2.0, free_fit='RAY'):
     """Base generation plus decaying propagation of vertex constraints.
 
     The base is generated without vertex constraints; each constrained
@@ -304,7 +323,7 @@ def compose_flows(data, count, bias, locked_rails=(), constraints=None,
     constrained rows' displacements are propagated to the free rows with
     a falloff of roughly `influence` flows.
     """
-    base = generate(data, count, bias, locked_rails)
+    base = generate(data, count, bias, locked_rails, free_fit=free_fit)
     constraints = constraints or {}
     rail_count = len(data.curves)
 
@@ -604,7 +623,7 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
 
 
 def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
-                     constraints=None, influence=2.0):
+                     constraints=None, influence=2.0, free_fit='RAY'):
     """Full UI-independent pipeline on an edit-mesh object.
 
     The end rows get their default endpoint locks; explicit constraints
@@ -619,7 +638,7 @@ def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
     merged = default_end_constraints(data, count)
     merged.update(constraints or {})
     flows = compose_flows(data, count, bias, locked_rails, merged,
-                          influence)
+                          influence, free_fit)
     apply_regeneration(bm, data, flows, locked_rails)
     bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
     return len(flows)
@@ -651,6 +670,7 @@ class _Session:
         self.count = default_flow_count(data)
         self.bias = 0.5
         self.influence = 2.0
+        self.free_fit = 'RAY'
         self.locked = set()
         self.constraints = {}
         self.flows = []
@@ -697,7 +717,7 @@ def _reset_constraints(session):
 def _regenerate(session):
     session.flows = compose_flows(session.data, session.count, session.bias,
                                   tuple(session.locked), session.constraints,
-                                  session.influence)
+                                  session.influence, session.free_fit)
     session.count = len(session.flows)
     _refresh_caches(session)
 
@@ -747,6 +767,7 @@ def _sync_settings(session):
         settings.flow_count = session.count
         settings.curvature_bias = session.bias
         settings.influence = session.influence
+        settings.free_fit = session.free_fit
     finally:
         _suppress_updates = False
 
@@ -762,6 +783,9 @@ def _settings_changed(_self, _context):
         _regenerate(_session)
     if abs(settings.influence - _session.influence) > 1.0e-6:
         _session.influence = settings.influence
+        _regenerate(_session)
+    if settings.free_fit != _session.free_fit:
+        _session.free_fit = settings.free_fit
         _regenerate(_session)
 
 
@@ -944,6 +968,23 @@ class MilkyRegenSettings(bpy.types.PropertyGroup):
         min=0.0, max=10.0, default=2.0,
         update=_settings_changed,
     )
+    free_fit: bpy.props.EnumProperty(
+        name="Free Side Fit",
+        description=("How the unlocked outer chain is reached when a "
+                     "chain is locked"),
+        items=[
+            ('RAY', "Ray Aiming",
+             "Aim rays from the locked rows to place the free-side "
+             "vertices"),
+            ('RATIO', "Ratio Copy",
+             "Anchor the free outer chain at the locked chain's "
+             "arc-length ratios"),
+            ('DENSITY', "Curvature Density",
+             "Anchor the free outer chain at its own curvature-density "
+             "quantiles"),
+        ],
+        default='RAY', update=_settings_changed,
+    )
 
 
 class MESH_OT_milky_regen_request(bpy.types.Operator):
@@ -979,6 +1020,9 @@ class VIEW3D_PT_milky_regen(bpy.types.Panel):
         col.prop(settings, "flow_count")
         col.prop(settings, "curvature_bias")
         layout.prop(settings, "influence")
+        row = layout.row()
+        row.enabled = bool(_session.locked)
+        row.prop(settings, "free_fit", text="Free Side Fit")
         if _session.message:
             layout.label(text=_session.message, icon='ERROR')
         row = layout.row()

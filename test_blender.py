@@ -223,6 +223,30 @@ def test_regenerate_locked_rail():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
+def test_regenerate_locked_free_fit_modes():
+    """RATIO/DENSITY anchor the free outer chain instead of ray aiming;
+    on the uniform grid every mode reproduces the straight rows."""
+    for mode in ('RATIO', 'DENSITY'):
+        obj = build_plain_grid(REG_COLS, REG_ROWS)
+        bpy.ops.object.mode_set(mode='EDIT')
+        select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+        count = milky_regen.run_regeneration(obj, locked_rails=(0,),
+                                             free_fit=mode)
+        assert count == REG_ROWS, f"[{mode}] flow count {count}"
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        assert len(bm.verts) == 24, f"[{mode}] vert count {len(bm.verts)}"
+        assert len(bm.faces) == 12, f"[{mode}] face count {len(bm.faces)}"
+        for x in (1.0, 4.0):
+            ys = sorted(round(v.co.y, 3) for v in bm.verts
+                        if abs(v.co.x - x) < 1e-4)
+            assert ys == [0.0, 1.0, 2.0, 3.0, 4.0], (mode, x, ys)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        assert not obj.data.validate(verbose=True), \
+            f"[{mode}] mesh needed corrections"
+
+
 def test_regenerate_moved_end_row():
     """Unlocked (constrained inward) end rows create the band n-gon that
     reconnects the preserved end boundary; propagation off for exactness."""
@@ -384,6 +408,7 @@ def main():
     test_regenerate_basic()
     test_regenerate_same_density()
     test_regenerate_locked_rail()
+    test_regenerate_locked_free_fit_modes()
     test_regenerate_moved_end_row()
     test_regenerate_three_rails()
     test_regenerate_denser_count()
