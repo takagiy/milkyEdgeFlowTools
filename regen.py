@@ -262,7 +262,7 @@ def default_flow_count(data):
 
 
 def generate(data, count, bias, locked_rails=(), constraints=None,
-             free_fit='RAY'):
+             free_fit='RATIO'):
     """Generate base flows via anchored midpoint blending.
 
     Locked rails anchor the flows at their knots; without locks both
@@ -315,7 +315,7 @@ def default_end_constraints(data, flow_count):
 
 
 def compose_flows(data, count, bias, locked_rails=(), constraints=None,
-                  influence=2.0, free_fit='RAY'):
+                  influence=2.0, free_fit='RATIO'):
     """Base generation plus decaying propagation of vertex constraints.
 
     The base is generated without vertex constraints; each constrained
@@ -623,7 +623,7 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
 
 
 def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
-                     constraints=None, influence=2.0, free_fit='RAY'):
+                     constraints=None, influence=2.0, free_fit='RATIO'):
     """Full UI-independent pipeline on an edit-mesh object.
 
     The end rows get their default endpoint locks; explicit constraints
@@ -670,7 +670,7 @@ class _Session:
         self.count = default_flow_count(data)
         self.bias = 0.5
         self.influence = 2.0
-        self.free_fit = 'RAY'
+        self.free_fit = 'RATIO'
         self.locked = set()
         self.constraints = {}
         self.flows = []
@@ -983,7 +983,7 @@ class MilkyRegenSettings(bpy.types.PropertyGroup):
              "Anchor the free outer chain at its own curvature-density "
              "quantiles"),
         ],
-        default='RAY', update=_settings_changed,
+        default='RATIO', update=_settings_changed,
     )
 
 
