@@ -345,7 +345,8 @@ def compose_flows(data, count, bias, locked_rails=(), constraints=None,
     a falloff of roughly `influence` flows.
 
     mode='COPY' replaces the blended base with translated + scaled
-    (never rotated) copies of the reference row `copy_row`: the row's
+    (never rotated) copies of the reference row `copy_row` (default:
+    the lowest constrained row, normally the end row): the row's
     constrained shape is aimed from one-side anchors (a single locked
     chain's knots, or curvature-density samples on the longer outer
     rail). Vertex constraints still propagate on top.
@@ -361,6 +362,8 @@ def compose_flows(data, count, bias, locked_rails=(), constraints=None,
             rows.setdefault(i, {})[rj] = s
 
     if mode == 'COPY':
+        if copy_row is None and rows:
+            copy_row = min(rows)
         if copy_row is None or not 0 <= copy_row < len(base):
             raise StripError("Copy Flow Shape needs a locked or dragged "
                              "flow row")
@@ -744,8 +747,7 @@ class _Session:
         self.generation_mode = 'BLEND'
         self.locked = set()
         self.constraints = {}
-        self.manual = set()          # user-made (flow_i, rail_j) keys
-        self.manual_history = []     # rows in operation order
+        self.row_history = []        # constrained rows in operation order
         self.flows = []
         self.message = ""
         self.rail_lines = []   # world-space polylines per rail
@@ -785,16 +787,17 @@ def _refresh_caches(session):
 def _reset_constraints(session):
     session.constraints = default_end_constraints(session.data,
                                                   session.count)
-    session.manual = set()
-    session.manual_history = []
+    session.row_history = []
 
 
 def _active_copy_row(session):
-    """Most recently operated row that still has a manual constraint."""
-    for i in reversed(session.manual_history):
-        if any(key[0] == i for key in session.manual):
+    """The reference row: most recently operated constrained row, else
+    the lowest constrained row (normally the default-locked end row)."""
+    constrained = {i for (i, _rj) in session.constraints}
+    for i in reversed(session.row_history):
+        if i in constrained:
             return i
-    return None
+    return min(constrained) if constrained else None
 
 
 def _regenerate(session):
@@ -1271,14 +1274,12 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
                         return {'RUNNING_MODAL'}
                     if handle in session.constraints:
                         del session.constraints[handle]
-                        session.manual.discard(handle)
                     else:
                         session.constraints[handle] = \
                             session.flows[flow_i][rail_j]
-                        session.manual.add(handle)
-                        if (not session.manual_history
-                                or session.manual_history[-1] != flow_i):
-                            session.manual_history.append(flow_i)
+                        if (not session.row_history
+                                or session.row_history[-1] != flow_i):
+                            session.row_history.append(flow_i)
                     session.message = ""
                     _regenerate(session)
                     return {'RUNNING_MODAL'}
@@ -1299,10 +1300,9 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
             param = _drag_param(context, event, rail_j)
             if param is not None:
                 session.constraints[(flow_i, rail_j)] = param
-                session.manual.add((flow_i, rail_j))
-                if (not session.manual_history
-                        or session.manual_history[-1] != flow_i):
-                    session.manual_history.append(flow_i)
+                if (not session.row_history
+                        or session.row_history[-1] != flow_i):
+                    session.row_history.append(flow_i)
                 _regenerate(session)
             return {'RUNNING_MODAL'}
 

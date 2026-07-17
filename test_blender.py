@@ -424,18 +424,25 @@ def test_regenerate_copy_flow_shape():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
-def test_regenerate_copy_flow_shape_errors():
-    """COPY mode rejects a missing reference row and >1 locked chains."""
+def test_regenerate_copy_flow_shape_defaults_and_errors():
+    """Without copy_row COPY falls back to the lowest constrained row
+    (the default-locked end row); >1 locked chains are rejected."""
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
     select_grid_columns(obj, (1, 2, 4), REG_COLS, REG_ROWS)
 
-    try:
-        milky_regen.run_regeneration(obj, mode='COPY')
-        raise AssertionError("missing copy_row was accepted")
-    except milky_regen.StripError as exc:
-        assert "locked or dragged flow row" in exc.message, exc.message
+    count = milky_regen.run_regeneration(obj, count=5, bias=0.0,
+                                         mode='COPY')
+    assert count == 5, f"flow count {count}"
+    bm = bmesh.from_edit_mesh(obj.data)
+    for x in (1.0, 2.0, 4.0):
+        ys = sorted(round(v.co.y, 3) for v in bm.verts
+                    if abs(v.co.x - x) < 1e-4)
+        assert ys == [0.0, 1.0, 2.0, 3.0, 4.0], (x, ys)
 
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 2, 4), REG_COLS, REG_ROWS)
     try:
         milky_regen.run_regeneration(obj, locked_rails=(0, 2),
                                      mode='COPY', copy_row=1)
@@ -508,7 +515,7 @@ def main():
     test_regenerate_denser_count()
     test_regenerate_locked_intermediate_rail()
     test_regenerate_copy_flow_shape()
-    test_regenerate_copy_flow_shape_errors()
+    test_regenerate_copy_flow_shape_defaults_and_errors()
     test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()
