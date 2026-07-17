@@ -154,31 +154,51 @@ def analyze_strip(bm):
     data = StripData()
     data.rails = rails
 
-    # End paths: crossing walks between the outermost rails' endpoints.
+    # End paths: crossing walks between the outermost rails. Chains may
+    # overshoot the shared end row (e.g. a loop-select running past the
+    # strip corner), so the walk may hit the far rail at any vertex; a
+    # candidate path is valid when it crosses every rail exactly once,
+    # and each rail is then trimmed back to the shared row.
     first, last = rails[0], rails[-1]
+
+    def _find_end_path(end):
+        for origin, target in ((first, last), (last, first)):
+            target_verts = set(target)
+            start_vert = bm.verts[origin[end]]
+            for edge in start_vert.link_edges:
+                if _edge_key(edge) in chain_keys:
+                    continue
+                walked = _walk_crossing(
+                    start_vert, edge,
+                    lambda v: v.index in target_verts,
+                    END_WALK_MAX_STEPS)
+                if not walked:
+                    continue
+                path = [origin[end]] + [v.index for v in walked]
+                if origin is last:
+                    path.reverse()
+                on_path = set(path)
+                if all(sum(vi in on_path for vi in rail) == 1
+                       for rail in rails):
+                    return path
+        return None
+
     for end in (0, -1):
-        start_vert = bm.verts[first[end]]
-        target = last[end]
-        path = None
-        for edge in start_vert.link_edges:
-            if _edge_key(edge) in chain_keys:
-                continue
-            walked = _walk_crossing(
-                start_vert, edge,
-                lambda v: v.index in (last[0], last[-1]),
-                END_WALK_MAX_STEPS)
-            if walked and walked[-1].index == target:
-                path = [first[end]] + [v.index for v in walked]
-                break
+        path = _find_end_path(end)
         if path is None:
             raise StripError("Could not trace the strip ends; the end "
                              "rows must be walkable crossing paths")
         on_path = set(path)
-        for rail in rails[1:-1]:
-            if rail[end] not in on_path:
-                raise StripError("Could not trace the strip ends; the end "
-                                 "rows must be walkable crossing paths")
+        for rail in rails:
+            k = next(i for i, vi in enumerate(rail) if vi in on_path)
+            if end == 0:
+                del rail[:k]
+            else:
+                del rail[k + 1:]
         data.end_paths.append(path)
+    if any(len(rail) < 2 for rail in rails):
+        raise StripError("Selected chains must form a row of parallel "
+                         "open loops")
 
     # Flood fill the strip faces from the corner face (the unique face
     # sharing both the first rail edge and the first end-path edge).

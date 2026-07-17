@@ -247,6 +247,42 @@ def test_regenerate_locked_free_fit_modes():
             f"[{mode}] mesh needed corrections"
 
 
+def test_regenerate_trims_overshoot():
+    """A chain running past the shared end row is trimmed back to the
+    row instead of rejecting the strip (loop-select overshoot)."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    # Column 1 spans rows 0..3 only; column 4 runs on to row 4, one edge
+    # past the shared end row at y=3.
+    keys = {frozenset((r * REG_COLS + 1, (r + 1) * REG_COLS + 1))
+            for r in range(3)}
+    keys |= {frozenset((r * REG_COLS + 4, (r + 1) * REG_COLS + 4))
+             for r in range(REG_ROWS - 1)}
+    for e in bm.edges:
+        e.select = frozenset((e.verts[0].index, e.verts[1].index)) in keys
+    for v in bm.verts:
+        v.select = any(e.select for e in v.link_edges)
+    bmesh.update_edit_mesh(obj.data)
+
+    count = milky_regen.run_regeneration(obj, bias=0.0)
+    assert count == 4, f"flow count {count}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    assert len(bm.verts) == 26, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 14, f"face count {len(bm.faces)}"
+    # Rows 0..3 are the regenerated strip; the y=4 verts sit outside it
+    # (column 1's was never selected, column 4's was trimmed off).
+    for x in (1.0, 4.0):
+        ys = sorted(round(v.co.y, 3) for v in bm.verts
+                    if abs(v.co.x - x) < 1e-4)
+        assert ys == [0.0, 1.0, 2.0, 3.0, 4.0], (x, ys)
+    assert not any(len(e.link_faces) > 2 for e in bm.edges), "non-manifold"
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
 def test_regenerate_moved_end_row():
     """Unlocked (constrained inward) end rows create the band n-gon that
     reconnects the preserved end boundary; propagation off for exactness."""
@@ -409,6 +445,7 @@ def main():
     test_regenerate_same_density()
     test_regenerate_locked_rail()
     test_regenerate_locked_free_fit_modes()
+    test_regenerate_trims_overshoot()
     test_regenerate_moved_end_row()
     test_regenerate_three_rails()
     test_regenerate_denser_count()
