@@ -1,7 +1,10 @@
 """Pure-logic core for milkyEdgeFlowTools.
 
-No bpy dependency; everything operates on plain tuples and lists so it can
-be tested with any Python interpreter (see test_core.py).
+No bpy dependency; the public API operates on plain tuples and lists so it
+can be tested with any Python interpreter (see test_core.py). The curve
+internals are vectorized with numpy (bundled with Blender and the bpy
+wheel) — the closest-point searches and flow-curve sampling dominate the
+regeneration cost.
 
 Pipeline (see requirements.md):
   decompose_chains -> CatmullRomCurve -> compute_vertex_target (per vertex)
@@ -12,6 +15,8 @@ or curve types can be swapped in later.
 
 import math
 from bisect import bisect_right
+
+import numpy as np
 
 # Weight used to emulate a hard constraint for pinned vertices in the
 # quadratic solver.
@@ -86,6 +91,62 @@ def _rotate_toward(vector, from_dir, to_dir):
     kv = _cross(axis, vector)
     kkv = _cross(axis, kv)
     return _add(_add(vector, _mul(kv, sin_a)), _mul(kkv, 1.0 - cos_a))
+
+
+def _rotate_rows(rows, from_dir, to_dir):
+    """_rotate_toward applied to every row of an (N, 3) array."""
+    f = _normalize(tuple(from_dir))
+    t = _normalize(tuple(to_dir))
+    if f is None or t is None:
+        return rows
+    axis = np.cross(f, t)
+    sin_a = float(np.linalg.norm(axis))
+    cos_a = max(-1.0, min(1.0, float(np.dot(f, t))))
+    if sin_a < 1.0e-12:
+        if cos_a > 0.0:
+            return rows
+        reference = (1.0, 0.0, 0.0) if abs(f[0]) < 0.9 else (0.0, 1.0, 0.0)
+        axis = np.cross(f, reference)
+        axis = axis / np.linalg.norm(axis)
+        d = rows @ axis
+        return 2.0 * d[:, None] * axis[None, :] - rows
+    axis = axis / sin_a
+    kv = np.cross(np.broadcast_to(axis, rows.shape), rows)
+    kkv = np.cross(np.broadcast_to(axis, rows.shape), kv)
+    return rows + kv * sin_a + kkv * (1.0 - cos_a)
+
+
+def _seg_seg_pairs(p1, d1, p2, d2):
+    """Vectorized _closest_segment_segment over broadcast segment pairs.
+
+    p1/d1 and p2/d2 broadcast against each other ((N, 1, 3) vs (1, M, 3));
+    returns (squared distance, param on the first segment), both (N, M).
+    """
+    r = p1 - p2
+    a = np.sum(d1 * d1, axis=-1)
+    e = np.sum(d2 * d2, axis=-1)
+    f = np.sum(d2 * r, axis=-1)
+    c = np.sum(d1 * r, axis=-1)
+    b = np.sum(d1 * d2, axis=-1)
+    deg1 = a < 1.0e-18
+    deg2 = e < 1.0e-18
+    with np.errstate(divide='ignore', invalid='ignore'):
+        denom = a * e - b * b
+        s_main = np.where(denom > 1.0e-18,
+                          np.clip((b * f - c * e) / denom, 0.0, 1.0), 0.0)
+        t_main = (b * s_main + f) / e
+        s_low = np.clip(-c / a, 0.0, 1.0)
+        s_high = np.clip((b - c) / a, 0.0, 1.0)
+        t_deg1 = np.clip(f / e, 0.0, 1.0)
+    s = np.where(t_main < 0.0, s_low,
+                 np.where(t_main > 1.0, s_high, s_main))
+    t = np.clip(t_main, 0.0, 1.0)
+    s = np.where(deg1, 0.0, np.where(deg2, s_low, s))
+    t = np.where(deg2, 0.0, np.where(deg1, t_deg1, t))
+    s = np.where(deg1 & deg2, 0.0, s)
+    t = np.where(deg1 & deg2, 0.0, t)
+    diff = (p1 + d1 * s[..., None]) - (p2 + d2 * t[..., None])
+    return np.sum(diff * diff, axis=-1), s
 
 
 def _closest_segment_segment(p1, q1, p2, q2):
@@ -184,75 +245,73 @@ def decompose_chains(edges):
 # Centripetal Catmull-Rom curve, arc-length parameterized
 # ---------------------------------------------------------------------------
 
-def _cr_point(p0, p1, p2, p3, u):
-    """Barry-Goldman centripetal Catmull-Rom; u in [0, 1] maps to [p1, p2]."""
-    alpha = 0.5
-    t0 = 0.0
-    t1 = t0 + max(math.dist(p0, p1), 1.0e-9) ** alpha
-    t2 = t1 + max(math.dist(p1, p2), 1.0e-9) ** alpha
-    t3 = t2 + max(math.dist(p2, p3), 1.0e-9) ** alpha
-    t = t1 + (t2 - t1) * u
-
-    def lp(pa, pb, ta, tb):
-        # Unreachable defensively: every knot gap above is at least
-        # (1e-9 ** alpha) ~= 3.2e-5, so no lp span can drop below 1e-12.
-        if tb - ta < 1.0e-12:   # pragma: no cover
-            return pa
-        w = (t - ta) / (tb - ta)
-        return _lerp(pa, pb, w)
-
-    a1 = lp(p0, p1, t0, t1)
-    a2 = lp(p1, p2, t1, t2)
-    a3 = lp(p2, p3, t2, t3)
-    b1 = lp(a1, a2, t0, t2)
-    b2 = lp(a2, a3, t1, t3)
-    return lp(b1, b2, t1, t2)
-
-
 class CatmullRomCurve:
     """Interpolating spline through the given points.
 
     The curve is flattened into a dense polyline (samples_per_segment per
-    knot span) and parameterized by arc length along that polyline.
+    knot span) and parameterized by arc length along that polyline. The
+    Barry-Goldman centripetal evaluation runs vectorized over all
+    segments and sample positions at once.
     """
 
     def __init__(self, points, closed, samples_per_segment=16):
-        pts = [tuple(map(float, p)) for p in points]
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         n = len(pts)
         self.closed = closed
 
-        def ctrl(i):
-            if closed:
-                return pts[i % n]
-            if i < 0:
-                return _sub(_mul(pts[0], 2.0), pts[1])
-            if i >= n:
-                return _sub(_mul(pts[-1], 2.0), pts[-2])
-            return pts[i]
-
+        if closed:
+            ctrl = pts[(np.arange(n + 3) - 1) % n]
+        else:
+            ctrl = np.concatenate(([2.0 * pts[0] - pts[1]], pts,
+                                   [2.0 * pts[-1] - pts[-2]]))
         segments = n if closed else n - 1
-        samples = []
-        knot_sample_idx = []
-        for i in range(segments):
-            p0, p1, p2, p3 = ctrl(i - 1), ctrl(i), ctrl(i + 1), ctrl(i + 2)
-            knot_sample_idx.append(len(samples))
-            for k in range(samples_per_segment):
-                samples.append(_cr_point(p0, p1, p2, p3,
-                                         k / samples_per_segment))
+        i = np.arange(segments)
+        p0, p1 = ctrl[i], ctrl[i + 1]
+        p2, p3 = ctrl[i + 2], ctrl[i + 3]
+
+        # Centripetal knot spacing (alpha = 0.5); t0 = 0 per segment.
+        t1 = np.maximum(np.linalg.norm(p1 - p0, axis=1), 1.0e-9) ** 0.5
+        t2 = t1 + np.maximum(np.linalg.norm(p2 - p1, axis=1),
+                             1.0e-9) ** 0.5
+        t3 = t2 + np.maximum(np.linalg.norm(p3 - p2, axis=1),
+                             1.0e-9) ** 0.5
+        t0 = np.zeros_like(t1)
+        u = np.arange(samples_per_segment) / samples_per_segment
+        tt = t1[:, None] + (t2 - t1)[:, None] * u[None, :]
+
+        def lp(pa, pb, ta, tb):
+            w = ((tt - ta[:, None]) / (tb - ta)[:, None])[..., None]
+            if pa.ndim == 2:
+                pa = pa[:, None, :]
+                pb = pb[:, None, :]
+            return pa + (pb - pa) * w
+
+        a1 = lp(p0, p1, t0, t1)
+        a2 = lp(p1, p2, t1, t2)
+        a3 = lp(p2, p3, t2, t3)
+        b1 = lp(a1, a2, t0, t2)
+        b2 = lp(a2, a3, t1, t3)
+        curve_pts = lp(b1, b2, t1, t2).reshape(-1, 3)
+
         # Terminal sample: wrap point for closed, last input point for open.
-        end_idx = len(samples)
-        samples.append(pts[0] if closed else pts[-1])
+        terminal = pts[:1] if closed else pts[-1:]
+        arr = np.concatenate((curve_pts, terminal))
+        seg_vec = np.diff(arr, axis=0)
+        cum = np.concatenate(
+            ([0.0], np.cumsum(np.linalg.norm(seg_vec, axis=1))))
+
+        knot_sample_idx = [k * samples_per_segment for k in range(segments)]
         if not closed:
-            knot_sample_idx.append(end_idx)
+            knot_sample_idx.append(len(arr) - 1)
 
-        cum = [0.0]
-        for a, b in zip(samples, samples[1:]):
-            cum.append(cum[-1] + math.dist(a, b))
-
-        self._samples = samples
-        self._cum = cum
-        self.total_length = cum[-1]
-        self.knot_params = [cum[i] for i in knot_sample_idx]
+        self._pts_arr = arr
+        self._cum_arr = cum
+        self._seg_vec = seg_vec
+        self._seg_len2 = np.sum(seg_vec * seg_vec, axis=1)
+        self._samples = [tuple(map(float, row)) for row in arr]
+        self._cum = [float(s) for s in cum]
+        self.total_length = float(cum[-1])
+        self.knot_params = [float(cum[k]) for k in knot_sample_idx]
 
     def point_at(self, s):
         length = self.total_length
@@ -269,44 +328,55 @@ class CatmullRomCurve:
         u = 0.0 if span < 1.0e-12 else (s - cum[j]) / span
         return _lerp(self._samples[j], self._samples[j + 1], u)
 
+    def _points_at(self, s_values):
+        """point_at over an array of params; returns an (N, 3) array."""
+        s = np.asarray(s_values, dtype=np.float64)
+        length = self.total_length
+        if length <= 0.0:
+            return np.repeat(self._pts_arr[:1], len(s), axis=0)
+        s = s % length if self.closed else np.clip(s, 0.0, length)
+        j = np.searchsorted(self._cum_arr, s, side='right')
+        j = np.clip(j, 1, len(self._cum_arr) - 1) - 1
+        span = self._cum_arr[j + 1] - self._cum_arr[j]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            u = (s - self._cum_arr[j]) / span
+        u = np.where(span < 1.0e-12, 0.0, u)
+        return self._pts_arr[j] + self._seg_vec[j] * u[:, None]
+
     def closest_param_to_point(self, point):
         """Arc-length param of the curve point closest to `point`.
 
         Returns (s, distance).
         """
-        samples, cum = self._samples, self._cum
-        best_s, best_dist = 0.0, math.inf
-        for j in range(len(samples) - 1):
-            a = samples[j]
-            ab = _sub(samples[j + 1], a)
-            denom = _dot(ab, ab)
-            if denom < 1.0e-18:
-                u = 0.0
-            else:
-                u = min(max(_dot(ab, _sub(point, a)) / denom, 0.0), 1.0)
-            candidate = _add(a, _mul(ab, u))
-            dist = math.dist(candidate, point)
-            if dist < best_dist:
-                best_dist = dist
-                best_s = cum[j] + u * (cum[j + 1] - cum[j])
-        return best_s, best_dist
+        p = np.asarray(point, dtype=np.float64)
+        a = self._pts_arr[:-1]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            u = np.einsum('ij,ij->i', self._seg_vec, p - a) \
+                / self._seg_len2
+        u = np.where(self._seg_len2 < 1.0e-18, 0.0,
+                     np.clip(u, 0.0, 1.0))
+        diff = a + self._seg_vec * u[:, None] - p
+        d2 = np.einsum('ij,ij->i', diff, diff)
+        j = int(np.argmin(d2))
+        cum = self._cum_arr
+        best_s = float(cum[j] + u[j] * (cum[j + 1] - cum[j]))
+        return best_s, float(math.sqrt(d2[j]))
 
     def closest_param_to_polyline(self, points):
         """Arc-length param of the curve point closest to a polyline.
 
         Returns (s, distance).
         """
-        samples, cum = self._samples, self._cum
-        best_s, best_dist = 0.0, math.inf
-        for j in range(len(samples) - 1):
-            a, b = samples[j], samples[j + 1]
-            for k in range(len(points) - 1):
-                dist, u = _closest_segment_segment(a, b, points[k],
-                                                   points[k + 1])
-                if dist < best_dist:
-                    best_dist = dist
-                    best_s = cum[j] + u * (cum[j + 1] - cum[j])
-        return best_s, best_dist
+        q = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        d2, s = _seg_seg_pairs(self._pts_arr[:-1][:, None, :],
+                               self._seg_vec[:, None, :],
+                               q[:-1][None, :, :],
+                               np.diff(q, axis=0)[None, :, :])
+        flat = int(np.argmin(d2))
+        j, k = divmod(flat, d2.shape[1])
+        cum = self._cum_arr
+        best_s = float(cum[j] + s[j, k] * (cum[j + 1] - cum[j]))
+        return best_s, float(math.sqrt(d2[j, k]))
 
     def closest_param_to_ray(self, origin, direction):
         """Arc-length param of the curve point closest to the ray.
@@ -316,38 +386,38 @@ class CatmullRomCurve:
         is used. Returns (s, distance).
         """
         d = _normalize(direction)
-        samples, cum = self._samples, self._cum
+        o = np.asarray(origin, dtype=np.float64)
         if d is None:
             # Degenerate direction: closest sample to the origin.
-            best_j = min(range(len(samples)),
-                         key=lambda j: math.dist(samples[j], origin))
-            return cum[best_j], math.dist(samples[best_j], origin)
+            diff = self._pts_arr - o
+            d2 = np.einsum('ij,ij->i', diff, diff)
+            j = int(np.argmin(d2))
+            return float(self._cum_arr[j]), float(math.sqrt(d2[j]))
 
-        best_s, best_dist = 0.0, math.inf
-        for j in range(len(samples) - 1):
-            a = samples[j]
-            ab = _sub(samples[j + 1], a)
-            seg_len2 = _dot(ab, ab)
-            if seg_len2 < 1.0e-18:
-                continue
-            b_ = _dot(ab, d)
-            r = _sub(a, origin)
-            denom = seg_len2 - b_ * b_
-            if denom > 1.0e-12:
-                u = (b_ * _dot(d, r) - _dot(ab, r)) / denom
-                u = min(max(u, 0.0), 1.0)
-            else:
-                u = 0.0  # segment parallel to ray
-            t = max(0.0, _dot(d, _sub(_add(a, _mul(ab, u)), origin)))
-            u = min(max(_dot(ab, _sub(_add(origin, _mul(d, t)), a))
-                        / seg_len2, 0.0), 1.0)
-            p_seg = _add(a, _mul(ab, u))
-            p_ray = _add(origin, _mul(d, t))
-            dist = math.dist(p_seg, p_ray)
-            if dist < best_dist:
-                best_dist = dist
-                best_s = cum[j] + u * (cum[j + 1] - cum[j])
-        return best_s, best_dist
+        dv = np.asarray(d, dtype=np.float64)
+        a = self._pts_arr[:-1]
+        ab = self._seg_vec
+        seg_len2 = self._seg_len2
+        valid = seg_len2 >= 1.0e-18
+        b_ = ab @ dv
+        r = a - o
+        denom = seg_len2 - b_ * b_
+        with np.errstate(divide='ignore', invalid='ignore'):
+            u = (b_ * (r @ dv) - np.einsum('ij,ij->i', ab, r)) / denom
+            u = np.where(denom > 1.0e-12, np.clip(u, 0.0, 1.0), 0.0)
+            t = np.maximum(0.0, (a + ab * u[:, None] - o) @ dv)
+            u = np.clip(np.einsum('ij,ij->i', ab,
+                                  o + dv * t[:, None] - a) / seg_len2,
+                        0.0, 1.0)
+        u = np.where(valid, u, 0.0)
+        diff = (a + ab * u[:, None]) - (o + dv * t[:, None])
+        d2 = np.where(valid, np.einsum('ij,ij->i', diff, diff), np.inf)
+        if not valid.any():
+            return 0.0, math.inf
+        j = int(np.argmin(d2))
+        cum = self._cum_arr
+        best_s = float(cum[j] + u[j] * (cum[j + 1] - cum[j]))
+        return best_s, float(math.sqrt(d2[j]))
 
 
 # ---------------------------------------------------------------------------
@@ -730,26 +800,23 @@ def blend_flow_curve(points_a, points_b, weight, start, end, samples=32):
     """
     curve_a = CatmullRomCurve(points_a, closed=False)
     curve_b = CatmullRomCurve(points_b, closed=False)
-    chord = _sub(end, start)
-    chord_len = _length(chord)
-    result = []
-    for k in range(samples + 1):
-        t = k / samples
-        blended = (0.0, 0.0, 0.0)
-        for curve, pts, w in ((curve_a, points_a, 1.0 - weight),
-                              (curve_b, points_b, weight)):
-            src_start = tuple(map(float, pts[0]))
-            src_chord = _sub(tuple(map(float, pts[-1])), src_start)
-            src_len = _length(src_chord)
-            if src_len < 1.0e-12 or chord_len < 1.0e-12 or w == 0.0:
-                continue
-            point = curve.point_at(curve.total_length * t)
-            deviation = _sub(point, _add(src_start, _mul(src_chord, t)))
-            deviation = _rotate_toward(deviation, src_chord, chord)
-            deviation = _mul(deviation, chord_len / src_len)
-            blended = _add(blended, _mul(deviation, w))
-        result.append(_add(_add(start, _mul(chord, t)), blended))
-    return result
+    start_v = np.asarray(start, dtype=np.float64)
+    chord = np.asarray(end, dtype=np.float64) - start_v
+    chord_len = float(np.linalg.norm(chord))
+    t = np.arange(samples + 1) / samples
+    result = start_v + chord * t[:, None]
+    for curve, pts, w in ((curve_a, points_a, 1.0 - weight),
+                          (curve_b, points_b, weight)):
+        src_start = np.asarray(pts[0], dtype=np.float64)
+        src_chord = np.asarray(pts[-1], dtype=np.float64) - src_start
+        src_len = float(np.linalg.norm(src_chord))
+        if src_len < 1.0e-12 or chord_len < 1.0e-12 or w == 0.0:
+            continue
+        points_t = curve._points_at(curve.total_length * t)
+        deviation = points_t - (src_start + src_chord * t[:, None])
+        deviation = _rotate_rows(deviation, src_chord, chord)
+        result = result + deviation * (w * chord_len / src_len)
+    return [tuple(map(float, row)) for row in result]
 
 
 def copy_flow_curve(ref_points, start, end, samples=32):
@@ -761,19 +828,18 @@ def copy_flow_curve(ref_points, start, end, samples=32):
     samples + 1 points running from start to end.
     """
     curve = CatmullRomCurve(ref_points, closed=False)
-    src_start = tuple(map(float, ref_points[0]))
-    src_chord = _sub(tuple(map(float, ref_points[-1])), src_start)
-    src_len = _length(src_chord)
-    chord = _sub(end, start)
-    scale = _length(chord) / src_len if src_len > 1.0e-12 else 0.0
-    result = []
-    for k in range(samples + 1):
-        t = k / samples
-        point = curve.point_at(curve.total_length * t)
-        deviation = _sub(point, _add(src_start, _mul(src_chord, t)))
-        result.append(_add(_add(start, _mul(chord, t)),
-                           _mul(deviation, scale)))
-    return result
+    src_start = np.asarray(ref_points[0], dtype=np.float64)
+    src_chord = np.asarray(ref_points[-1], dtype=np.float64) - src_start
+    src_len = float(np.linalg.norm(src_chord))
+    start_v = np.asarray(start, dtype=np.float64)
+    chord = np.asarray(end, dtype=np.float64) - start_v
+    scale = (float(np.linalg.norm(chord)) / src_len
+             if src_len > 1.0e-12 else 0.0)
+    t = np.arange(samples + 1) / samples
+    points_t = curve._points_at(curve.total_length * t)
+    deviation = points_t - (src_start + src_chord * t[:, None])
+    result = start_v + chord * t[:, None] + deviation * scale
+    return [tuple(map(float, row)) for row in result]
 
 
 def copy_flows(curves, anchor_rail, anchor_params, ref_points, samples=32):
