@@ -750,6 +750,84 @@ def blend_flow_curve(points_a, points_b, weight, start, end, samples=32):
     return result
 
 
+def copy_flow_curve(ref_points, start, end, samples=32):
+    """Translated + chord-scaled copy of a reference flow polyline.
+
+    Unlike blend_flow_curve the deviation field is never rotated: the
+    copy keeps the reference row's orientation exactly and only scales
+    isotropically by the chord-length ratio. Returns a polyline of
+    samples + 1 points running from start to end.
+    """
+    curve = CatmullRomCurve(ref_points, closed=False)
+    src_start = tuple(map(float, ref_points[0]))
+    src_chord = _sub(tuple(map(float, ref_points[-1])), src_start)
+    src_len = _length(src_chord)
+    chord = _sub(end, start)
+    scale = _length(chord) / src_len if src_len > 1.0e-12 else 0.0
+    result = []
+    for k in range(samples + 1):
+        t = k / samples
+        point = curve.point_at(curve.total_length * t)
+        deviation = _sub(point, _add(src_start, _mul(src_chord, t)))
+        result.append(_add(_add(start, _mul(chord, t)),
+                           _mul(deviation, scale)))
+    return result
+
+
+def copy_flows(curves, anchor_rail, anchor_params, ref_points, samples=32):
+    """Flow params as translated + scaled copies of a reference row.
+
+    Every row keeps the reference row's shape and orientation (uniform
+    scale only): from each anchor the reference chord direction is aimed
+    as a fixed ray toward the outer rails, the hits become the row's
+    endpoints, and the unrotated reference shape scaled by the
+    chord-length ratio is fitted between them. Intermediate rails take
+    the closest point on the fitted polyline.
+
+    ref_points runs across all rails in rail order (index 0 = rail 0).
+    Rows follow the order of anchor_params; per-rail ordering is the
+    caller's concern (compose applies min-spacing afterwards).
+    """
+    rail_count = len(curves)
+    src_start = tuple(map(float, ref_points[0]))
+    src_chord = _sub(tuple(map(float, ref_points[-1])), src_start)
+    direction = _normalize(src_chord)
+
+    params = []
+    for s in anchor_params:
+        anchor_point = curves[anchor_rail].point_at(s)
+        if anchor_rail == 0:
+            s0 = s
+        elif direction is not None:
+            s0, _dist = curves[0].closest_param_to_ray(
+                anchor_point, _mul(direction, -1.0))
+        else:
+            s0 = 0.0
+        if anchor_rail == rail_count - 1:
+            s1 = s
+        elif direction is not None:
+            s1, _dist = curves[rail_count - 1].closest_param_to_ray(
+                anchor_point, direction)
+        else:
+            s1 = 0.0
+        start = curves[0].point_at(s0)
+        end = curves[rail_count - 1].point_at(s1)
+        fitted = copy_flow_curve(ref_points, start, end, samples)
+        row = []
+        for rj in range(rail_count):
+            if rj == anchor_rail:
+                row.append(s)
+            elif rj == 0:
+                row.append(s0)
+            elif rj == rail_count - 1:
+                row.append(s1)
+            else:
+                s_j, _dist = curves[rj].closest_param_to_polyline(fitted)
+                row.append(s_j)
+        params.append(row)
+    return params
+
+
 def bisect_flows(curves, anchors, samples=32):
     """Flow params by recursive midpoint blending between anchor rails.
 

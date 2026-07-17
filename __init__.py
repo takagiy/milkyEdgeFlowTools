@@ -351,6 +351,22 @@ _translations = {
               "quantiles"):
             "自由側の最外チェーン自身の曲率密度サンプリングを"
             "アンカーにする",
+        ("*", "Generation Mode"): "生成モード",
+        ("*", "How the base flow rows are generated"):
+            "フロー行のベース生成方式",
+        ("*", "Blend"): "ブレンド",
+        ("*", "Anchored midpoint blending between the outer rails"):
+            "アンカー付き中間カーブブレンドで生成",
+        ("*", "Copy Flow Shape"): "フロー形状コピー",
+        ("*", "Every row copies the reference row's shape and "
+              "orientation; only the scale varies"):
+            "全行を基準行の形状・向きのコピーとして生成"
+            "（スケールのみ変化）",
+        ("*", "Copy Flow Shape needs a locked or dragged flow row"):
+            "フロー形状コピーには頂点をロック/ドラッグした"
+            "基準行が必要です",
+        ("*", "Copy Flow Shape supports at most one locked chain"):
+            "フロー形状コピーでロックできるチェーンは1本までです",
         ("*", "Locked chains must have the same vertex count (%d vs %d)"):
             "ロックするチェーンの頂点数が一致しません (%d と %d)",
         ("*", "Selected chains must form a row of parallel open loops"):

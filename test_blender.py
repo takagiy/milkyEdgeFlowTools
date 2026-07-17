@@ -396,6 +396,55 @@ def test_regenerate_locked_intermediate_rail():
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
 
+def test_regenerate_copy_flow_shape():
+    """COPY mode: free rows are parallel copies of the reference row
+    (fixed chord direction, scale only); end rows stay pinned by the
+    default end locks with influence 0."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+
+    # Sculpt row 2 into a mild diagonal: y=2 on the left rail, y=2.5 on
+    # the right one; every free row must repeat that +0.5 offset.
+    count = milky_regen.run_regeneration(
+        obj, count=5, bias=0.0,
+        constraints={(2, 0): 2.0, (2, 1): 2.5},
+        influence=0.0, mode='COPY', copy_row=2)
+    assert count == 5, f"flow count {count}"
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    ys1 = sorted(round(v.co.y, 2) for v in bm.verts
+                 if abs(v.co.x - 1.0) < 1e-4)
+    ys4 = sorted(round(v.co.y, 2) for v in bm.verts
+                 if abs(v.co.x - 4.0) < 1e-4)
+    assert ys1 == [0.0, 1.0, 2.0, 3.0, 4.0], ys1
+    assert ys4 == [0.0, 1.5, 2.5, 3.5, 4.0], ys4
+    assert not any(len(e.link_faces) > 2 for e in bm.edges), "non-manifold"
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), "mesh needed corrections"
+
+
+def test_regenerate_copy_flow_shape_errors():
+    """COPY mode rejects a missing reference row and >1 locked chains."""
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 2, 4), REG_COLS, REG_ROWS)
+
+    try:
+        milky_regen.run_regeneration(obj, mode='COPY')
+        raise AssertionError("missing copy_row was accepted")
+    except milky_regen.StripError as exc:
+        assert "locked or dragged flow row" in exc.message, exc.message
+
+    try:
+        milky_regen.run_regeneration(obj, locked_rails=(0, 2),
+                                     mode='COPY', copy_row=1)
+        raise AssertionError("two locked chains were accepted")
+    except milky_regen.StripError as exc:
+        assert "at most one locked chain" in exc.message, exc.message
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
 def test_regenerate_rejects_single_chain():
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -458,6 +507,8 @@ def main():
     test_regenerate_three_rails()
     test_regenerate_denser_count()
     test_regenerate_locked_intermediate_rail()
+    test_regenerate_copy_flow_shape()
+    test_regenerate_copy_flow_shape_errors()
     test_regenerate_rejects_single_chain()
 
     milkyEdgeFlowTools.unregister()

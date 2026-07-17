@@ -63,6 +63,7 @@ from core import (
     CatmullRomCurve,
     common_sample_ratios,
     compute_vertex_target,
+    copy_flows,
     decompose_chains,
     enforce_min_spacing,
     flow_direction,
@@ -450,6 +451,49 @@ class TestPropagation(unittest.TestCase):
         self.assertAlmostEqual(out[1][0], 2.5, delta=1e-9)
         for i in (0, 2, 3):
             self.assertAlmostEqual(out[i][0], base[i][0], delta=1e-9)
+
+
+class TestCopyFlows(unittest.TestCase):
+    def test_parallel_rails_translate_profile(self):
+        rails = straight_rails(4, spacing=1.0, length=10)
+        # Reference row: a straight diagonal, +0.5 in y per rail.
+        ref = [(float(j), 2.0 + 0.5 * j, 0.0) for j in range(4)]
+        flows = copy_flows(rails, 0, [0.0, 4.0, 8.0], ref)
+        for d, row in zip((0.0, 4.0, 8.0), flows):
+            for rj in range(4):
+                self.assertAlmostEqual(row[rj], d + 0.5 * rj, delta=0.05)
+
+    def test_deviation_copied_without_rotation(self):
+        rails = straight_rails(3, spacing=1.0, length=10)
+        # Reference row bulges +1 in y at the middle rail.
+        ref = [(0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 0.0, 0.0)]
+        flows = copy_flows(rails, 0, [5.0], ref)
+        row = flows[0]
+        self.assertAlmostEqual(row[0], 5.0, delta=1e-9)
+        self.assertAlmostEqual(row[2], 5.0, delta=0.05)
+        self.assertAlmostEqual(row[1], 6.0, delta=0.1)
+
+    def test_chord_direction_fixed_on_fan(self):
+        near = CatmullRomCurve([(0.0, float(y), 0.0) for y in range(11)],
+                               closed=False)
+        far = CatmullRomCurve([(4.0 + 0.3 * y, float(y), 0.0)
+                               for y in range(11)], closed=False)
+        ref = [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0)]  # horizontal chord
+        flows = copy_flows([near, far], 0, [2.0, 6.0], ref)
+        # The fixed horizontal ray keeps every row horizontal even though
+        # the far rail leans away (the hit stays at the anchor's height).
+        for s_anchor, row in zip((2.0, 6.0), flows):
+            hit = far.point_at(row[1])
+            self.assertAlmostEqual(hit[1], s_anchor, delta=0.05)
+
+    def test_intermediate_anchor_reaches_both_outers(self):
+        rails = straight_rails(3, spacing=1.0, length=10)
+        ref = [(0.0, 0.0, 0.0), (1.0, 0.5, 0.0), (2.0, 1.0, 0.0)]
+        flows = copy_flows(rails, 1, [3.0], ref)
+        row = flows[0]
+        self.assertAlmostEqual(row[1], 3.0, delta=1e-9)
+        self.assertAlmostEqual(row[0], 2.5, delta=0.05)
+        self.assertAlmostEqual(row[2], 3.5, delta=0.05)
 
 
 class TestBisectFlows(unittest.TestCase):

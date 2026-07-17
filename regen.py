@@ -335,22 +335,63 @@ def default_end_constraints(data, flow_count):
 
 
 def compose_flows(data, count, bias, locked_rails=(), constraints=None,
-                  influence=2.0, free_fit='RATIO'):
+                  influence=2.0, free_fit='RATIO', mode='BLEND',
+                  copy_row=None):
     """Base generation plus decaying propagation of vertex constraints.
 
     The base is generated without vertex constraints; each constrained
     flow is then re-smoothed through its constraints, and per rail the
     constrained rows' displacements are propagated to the free rows with
     a falloff of roughly `influence` flows.
+
+    mode='COPY' replaces the blended base with translated + scaled
+    (never rotated) copies of the reference row `copy_row`: the row's
+    constrained shape is aimed from one-side anchors (a single locked
+    chain's knots, or curvature-density samples on the longer outer
+    rail). Vertex constraints still propagate on top.
     """
     base = generate(data, count, bias, locked_rails, free_fit=free_fit)
     constraints = constraints or {}
     rail_count = len(data.curves)
+    curves = data.curves
 
     rows = {}
     for (i, rj), s in constraints.items():
         if 0 <= i < len(base) and 0 <= rj < rail_count:
             rows.setdefault(i, {})[rj] = s
+
+    if mode == 'COPY':
+        if copy_row is None or not 0 <= copy_row < len(base):
+            raise StripError("Copy Flow Shape needs a locked or dragged "
+                             "flow row")
+        if len(locked_rails) > 1:
+            raise StripError("Copy Flow Shape supports at most one "
+                             "locked chain")
+        params = list(base[copy_row])
+        pinned = [False] * rail_count
+        pinned[0] = pinned[-1] = True
+        for rj in locked_rails:
+            pinned[rj] = True
+        for rj, s in rows.get(copy_row, {}).items():
+            params[rj] = s
+            pinned[rj] = True
+        ref_params = core.smooth_flow_on_rails(curves, params, pinned)
+        ref_points = [curves[rj].point_at(ref_params[rj])
+                      for rj in range(rail_count)]
+        if locked_rails:
+            anchor_rail = locked_rails[0]
+            anchor_params = list(curves[anchor_rail].knot_params)
+        else:
+            anchor_rail = (0 if curves[0].total_length
+                           >= curves[rail_count - 1].total_length
+                           else rail_count - 1)
+            ratios = core.common_sample_ratios([curves[anchor_rail]],
+                                               count, bias)
+            anchor_params = [r * curves[anchor_rail].total_length
+                             for r in ratios]
+        base = core.copy_flows(curves, anchor_rail, anchor_params,
+                               ref_points)
+
     constrained_rows = {}
     for i, row_constraints in rows.items():
         params = list(base[i])
@@ -651,7 +692,8 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
 
 
 def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
-                     constraints=None, influence=2.0, free_fit='RATIO'):
+                     constraints=None, influence=2.0, free_fit='RATIO',
+                     mode='BLEND', copy_row=None):
     """Full UI-independent pipeline on an edit-mesh object.
 
     The end rows get their default endpoint locks; explicit constraints
@@ -666,7 +708,7 @@ def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
     merged = default_end_constraints(data, count)
     merged.update(constraints or {})
     flows = compose_flows(data, count, bias, locked_rails, merged,
-                          influence, free_fit)
+                          influence, free_fit, mode, copy_row)
     apply_regeneration(bm, data, flows, locked_rails)
     bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
     return len(flows)
@@ -699,8 +741,11 @@ class _Session:
         self.bias = 0.5
         self.influence = 2.0
         self.free_fit = 'RATIO'
+        self.generation_mode = 'BLEND'
         self.locked = set()
         self.constraints = {}
+        self.manual = set()          # user-made (flow_i, rail_j) keys
+        self.manual_history = []     # rows in operation order
         self.flows = []
         self.message = ""
         self.rail_lines = []   # world-space polylines per rail
@@ -740,14 +785,41 @@ def _refresh_caches(session):
 def _reset_constraints(session):
     session.constraints = default_end_constraints(session.data,
                                                   session.count)
+    session.manual = set()
+    session.manual_history = []
+
+
+def _active_copy_row(session):
+    """Most recently operated row that still has a manual constraint."""
+    for i in reversed(session.manual_history):
+        if any(key[0] == i for key in session.manual):
+            return i
+    return None
 
 
 def _regenerate(session):
+    mode = session.generation_mode
+    copy_row = _active_copy_row(session) if mode == 'COPY' else None
+    reverted = False
+    if mode == 'COPY' and copy_row is None:
+        session.message = ("Copy Flow Shape needs a locked or dragged "
+                           "flow row")
+        reverted = True
+    elif mode == 'COPY' and len(session.locked) > 1:
+        session.message = ("Copy Flow Shape supports at most one "
+                           "locked chain")
+        reverted = True
+    if reverted:
+        session.generation_mode = 'BLEND'
+        mode, copy_row = 'BLEND', None
     session.flows = compose_flows(session.data, session.count, session.bias,
                                   tuple(session.locked), session.constraints,
-                                  session.influence, session.free_fit)
+                                  session.influence, session.free_fit,
+                                  mode, copy_row)
     session.count = len(session.flows)
     _refresh_caches(session)
+    if reverted:
+        _sync_settings(session)
 
 
 def _set_count(session, count):
@@ -796,6 +868,7 @@ def _sync_settings(session):
         settings.curvature_bias = session.bias
         settings.influence = session.influence
         settings.free_fit = session.free_fit
+        settings.generation_mode = session.generation_mode
     finally:
         _suppress_updates = False
 
@@ -814,6 +887,10 @@ def _settings_changed(_self, _context):
         _regenerate(_session)
     if settings.free_fit != _session.free_fit:
         _session.free_fit = settings.free_fit
+        _regenerate(_session)
+    if settings.generation_mode != _session.generation_mode:
+        _session.generation_mode = settings.generation_mode
+        _session.message = ""
         _regenerate(_session)
 
 
@@ -1013,6 +1090,18 @@ class MilkyRegenSettings(bpy.types.PropertyGroup):
         ],
         default='RATIO', update=_settings_changed,
     )
+    generation_mode: bpy.props.EnumProperty(
+        name="Generation Mode",
+        description="How the base flow rows are generated",
+        items=[
+            ('BLEND', "Blend",
+             "Anchored midpoint blending between the outer rails"),
+            ('COPY', "Copy Flow Shape",
+             "Every row copies the reference row's shape and "
+             "orientation; only the scale varies"),
+        ],
+        default='BLEND', update=_settings_changed,
+    )
 
 
 class MESH_OT_milky_regen_request(bpy.types.Operator):
@@ -1048,8 +1137,10 @@ class VIEW3D_PT_milky_regen(bpy.types.Panel):
         col.prop(settings, "flow_count")
         col.prop(settings, "curvature_bias")
         layout.prop(settings, "influence")
+        layout.prop(settings, "generation_mode", text="Generation Mode")
         row = layout.row()
-        row.enabled = bool(_session.locked)
+        row.enabled = (bool(_session.locked)
+                       and _session.generation_mode != 'COPY')
         row.prop(settings, "free_fit", text="Free Side Fit")
         if _session.message:
             layout.label(text=_session.message, icon='ERROR')
@@ -1180,9 +1271,14 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
                         return {'RUNNING_MODAL'}
                     if handle in session.constraints:
                         del session.constraints[handle]
+                        session.manual.discard(handle)
                     else:
                         session.constraints[handle] = \
                             session.flows[flow_i][rail_j]
+                        session.manual.add(handle)
+                        if (not session.manual_history
+                                or session.manual_history[-1] != flow_i):
+                            session.manual_history.append(flow_i)
                     session.message = ""
                     _regenerate(session)
                     return {'RUNNING_MODAL'}
@@ -1203,6 +1299,10 @@ class MESH_OT_milky_regenerate_crossing_flows(bpy.types.Operator):
             param = _drag_param(context, event, rail_j)
             if param is not None:
                 session.constraints[(flow_i, rail_j)] = param
+                session.manual.add((flow_i, rail_j))
+                if (not session.manual_history
+                        or session.manual_history[-1] != flow_i):
+                    session.manual_history.append(flow_i)
                 _regenerate(session)
             return {'RUNNING_MODAL'}
 
