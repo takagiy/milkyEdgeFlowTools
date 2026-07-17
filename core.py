@@ -194,7 +194,9 @@ def _cr_point(p0, p1, p2, p3, u):
     t = t1 + (t2 - t1) * u
 
     def lp(pa, pb, ta, tb):
-        if tb - ta < 1.0e-12:
+        # Unreachable defensively: every knot gap above is at least
+        # (1e-9 ** alpha) ~= 3.2e-5, so no lp span can drop below 1e-12.
+        if tb - ta < 1.0e-12:   # pragma: no cover
             return pa
         w = (t - ta) / (tb - ta)
         return _lerp(pa, pb, w)

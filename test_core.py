@@ -61,6 +61,8 @@ import unittest
 import core
 from core import (
     CatmullRomCurve,
+    blend_flow_curve,
+    copy_flow_curve,
     common_sample_ratios,
     compute_vertex_target,
     copy_flows,
@@ -349,6 +351,55 @@ def straight_rails(count=3, spacing=1.0, length=4):
     return rails
 
 
+def s_rail_points(x_base=0.0, amp=0.4, length=5.0, twist=0.25, n=9):
+    """porta-like chain: S-curved, non-planar, unevenly spaced verts."""
+    pts = []
+    for k in range(n):
+        t = (k / (n - 1)) ** 1.2
+        pts.append((x_base + amp * math.sin(2.0 * math.pi * t),
+                    length * t,
+                    twist * math.cos(math.pi * t)))
+    return pts
+
+
+def brute_closest_on_curve(curve, target_fn, steps=2000):
+    """Reference argmin over a dense param scan; target_fn(point) -> dist."""
+    best_s, best_d = 0.0, math.inf
+    for i in range(steps + 1):
+        s = curve.total_length * i / steps
+        d = target_fn(curve.point_at(s))
+        if d < best_d:
+            best_s, best_d = s, d
+    return best_s, best_d
+
+
+def brute_seg_seg(p1, q1, p2, q2, steps=200):
+    """Reference closest distance / first-segment param by grid scan."""
+    best_d, best_s = math.inf, 0.0
+    for i in range(steps + 1):
+        s = i / steps
+        a = core._lerp(p1, q1, s)
+        for j in range(steps + 1):
+            d = math.dist(a, core._lerp(p2, q2, j / steps))
+            if d < best_d:
+                best_d, best_s = d, s
+    return best_d, best_s
+
+
+def dist_point_to_segment(point, a, b):
+    ab = core._sub(b, a)
+    denom = core._dot(ab, ab)
+    if denom < 1e-18:
+        return math.dist(point, a)
+    u = min(max(core._dot(ab, core._sub(point, a)) / denom, 0.0), 1.0)
+    return math.dist(point, core._add(a, core._mul(ab, u)))
+
+
+def dist_point_to_polyline(point, points):
+    return min(dist_point_to_segment(point, points[k], points[k + 1])
+               for k in range(len(points) - 1))
+
+
 class TestOrderRails(unittest.TestCase):
     def test_orders_a_path(self):
         order = order_rails(3, [(2, 1), (0, 2)])
@@ -453,6 +504,336 @@ class TestPropagation(unittest.TestCase):
             self.assertAlmostEqual(out[i][0], base[i][0], delta=1e-9)
 
 
+# ---------------------------------------------------------------------------
+# Branch-coverage suites for the numpy-migration surface
+# ---------------------------------------------------------------------------
+
+class TestRotateToward(unittest.TestCase):
+    V = (0.12, 0.55, -0.2)
+
+    def test_general_rotation_preserves_geometry(self):
+        f, t = (1.0, 0.25, 0.1), (0.3, 1.0, -0.4)
+        out = core._rotate_toward(self.V, f, t)
+        self.assertAlmostEqual(core._length(out), core._length(self.V),
+                               places=9)
+        fn, tn = core._normalize(f), core._normalize(t)
+        # angle to the frame direction is preserved...
+        self.assertAlmostEqual(core._dot(out, tn), core._dot(self.V, fn),
+                               places=9)
+        # ...and the component along the rotation axis is untouched.
+        axis = core._normalize(core._cross(fn, tn))
+        self.assertAlmostEqual(core._dot(out, axis),
+                               core._dot(self.V, axis), places=9)
+
+    def test_parallel_directions_return_vector(self):
+        out = core._rotate_toward(self.V, (2.0, 1.0, 0.4), (5.0, 2.5, 1.0))
+        self.assertEqual(out, self.V)
+
+    def test_antiparallel_mirror_near_x_axis(self):
+        f = (1.0, 0.2, 0.05)
+        out = core._rotate_toward(self.V, f, core._mul(f, -1.0))
+        fn = core._normalize(f)
+        self.assertAlmostEqual(core._length(out), core._length(self.V),
+                               places=9)
+        self.assertAlmostEqual(core._dot(out, fn),
+                               -core._dot(self.V, fn), places=9)
+
+    def test_antiparallel_mirror_off_axis(self):
+        f = (0.1, 0.95, 0.35)
+        out = core._rotate_toward(self.V, f, core._mul(f, -1.0))
+        fn = core._normalize(f)
+        self.assertAlmostEqual(core._length(out), core._length(self.V),
+                               places=9)
+        self.assertAlmostEqual(core._dot(out, fn),
+                               -core._dot(self.V, fn), places=9)
+
+    def test_degenerate_directions_return_vector(self):
+        self.assertEqual(
+            core._rotate_toward(self.V, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            self.V)
+        self.assertEqual(
+            core._rotate_toward(self.V, (1.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            self.V)
+
+
+class TestClosestSegmentSegment(unittest.TestCase):
+    def check(self, p1, q1, p2, q2, d_delta=5e-3, s_delta=0.02):
+        dist, s = core._closest_segment_segment(p1, q1, p2, q2)
+        b_dist, b_s = brute_seg_seg(p1, q1, p2, q2)
+        self.assertAlmostEqual(dist, b_dist, delta=d_delta)
+        self.assertAlmostEqual(s, b_s, delta=s_delta)
+        return dist, s
+
+    def test_skew_interior(self):
+        self.check((0.0, 0.0, 0.0), (2.0, 1.0, 0.6),
+                   (1.2, -0.4, 1.0), (0.8, 1.4, -0.6))
+
+    def test_closest_before_second_segment(self):
+        # Second segment leads away; its closest point is its start.
+        self.check((0.0, 0.0, 0.0), (3.0, 0.5, 0.0),
+                   (1.5, 2.0, 0.3), (1.8, 4.0, 0.6))
+
+    def test_closest_past_second_segment(self):
+        # Second segment approaches from afar; its closest point is its end.
+        self.check((0.0, 0.0, 0.0), (3.0, 0.5, 0.0),
+                   (1.8, 4.0, 0.6), (1.5, 2.0, 0.3))
+
+    def test_parallel_segments(self):
+        # The minimum is attained over a whole overlap interval, so only
+        # the distance is well defined; the returned param just needs to
+        # be a valid minimizer.
+        off = (0.1, 0.9, 0.05)
+        p1, q1 = (0.0, 0.0, 0.0), (2.0, 0.4, 0.2)
+        p2, q2 = core._add(p1, off), core._add(q1, off)
+        dist, s = core._closest_segment_segment(p1, q1, p2, q2)
+        b_dist, _b_s = brute_seg_seg(p1, q1, p2, q2)
+        self.assertAlmostEqual(dist, b_dist, delta=5e-3)
+        self.assertGreaterEqual(s, 0.0)
+        self.assertLessEqual(s, 1.0)
+
+    def test_first_segment_degenerate(self):
+        self.check((0.7, 0.3, 0.2), (0.7, 0.3, 0.2),
+                   (0.0, 1.0, 0.0), (2.0, 1.0, 0.5))
+
+    def test_second_segment_degenerate(self):
+        self.check((0.0, 1.0, 0.0), (2.0, 1.0, 0.5),
+                   (0.7, 0.3, 0.2), (0.7, 0.3, 0.2))
+
+    def test_both_degenerate(self):
+        dist, s = core._closest_segment_segment(
+            (0.5, 0.5, 0.5), (0.5, 0.5, 0.5),
+            (1.5, 0.5, 0.5), (1.5, 0.5, 0.5))
+        self.assertAlmostEqual(dist, 1.0, places=12)
+        self.assertEqual(s, 0.0)
+
+
+class TestCurveGeometry(unittest.TestCase):
+    def test_open_s_rail_interpolates_knots(self):
+        pts = s_rail_points()
+        curve = CatmullRomCurve(pts, closed=False)
+        self.assertEqual(len(curve.knot_params), len(pts))
+        self.assertAlmostEqual(curve.knot_params[0], 0.0)
+        self.assertAlmostEqual(curve.knot_params[-1], curve.total_length)
+        self.assertTrue(all(b > a for a, b in
+                            zip(curve.knot_params, curve.knot_params[1:])))
+        for s, p in zip(curve.knot_params, pts):
+            self.assertLess(vlen(curve.point_at(s), p), 1e-6)
+
+    def test_closed_loop_wraps_and_interpolates(self):
+        pts = [(1.3 * math.cos(k * math.pi / 4),
+                0.9 * math.sin(k * math.pi / 4),
+                0.15 * (-1.0) ** k) for k in range(8)]
+        curve = CatmullRomCurve(pts, closed=True)
+        self.assertEqual(len(curve.knot_params), 8)
+        length = curve.total_length
+        p = curve.point_at(0.3 * length)
+        self.assertLess(vlen(curve.point_at(0.3 * length + length), p), 1e-9)
+        self.assertLess(vlen(curve.point_at(0.3 * length - length), p), 1e-9)
+        for s, pt in zip(curve.knot_params, pts):
+            self.assertLess(vlen(curve.point_at(s), pt), 1e-6)
+
+    def test_duplicate_vertex_chain_is_finite(self):
+        pts = s_rail_points()
+        pts.insert(4, pts[4])  # merged verts happen on real meshes
+        curve = CatmullRomCurve(pts, closed=False)
+        self.assertTrue(math.isfinite(curve.total_length))
+        self.assertTrue(all(b >= a for a, b in
+                            zip(curve.knot_params, curve.knot_params[1:])))
+        self.assertLess(vlen(curve.point_at(curve.total_length), pts[-1]),
+                        1e-6)
+
+    def test_point_at_degenerate_curve(self):
+        curve = CatmullRomCurve([(1.0, 2.0, 3.0)] * 3, closed=False)
+        self.assertEqual(curve.total_length, 0.0)
+        self.assertEqual(curve.point_at(0.7), (1.0, 2.0, 3.0))
+
+    def test_point_at_clamps_open_ends(self):
+        curve = CatmullRomCurve(s_rail_points(), closed=False)
+        self.assertLess(vlen(curve.point_at(-3.0), curve.point_at(0.0)),
+                        1e-9)
+        self.assertLess(vlen(curve.point_at(curve.total_length + 3.0),
+                             curve.point_at(curve.total_length)), 1e-9)
+
+
+class TestClosestParamToPoint(unittest.TestCase):
+    def test_matches_brute_force_on_s_rail(self):
+        curve = CatmullRomCurve(s_rail_points(), closed=False)
+        probe = (0.55, 2.3, 0.4)
+        s, dist = curve.closest_param_to_point(probe)
+        b_s, b_dist = brute_closest_on_curve(
+            curve, lambda p: math.dist(p, probe))
+        self.assertAlmostEqual(dist, b_dist, delta=1e-3)
+        self.assertAlmostEqual(s, b_s, delta=0.02)
+
+    def test_probe_beyond_end_clamps(self):
+        curve = CatmullRomCurve(s_rail_points(), closed=False)
+        s, _dist = curve.closest_param_to_point((0.0, -2.0, 0.3))
+        self.assertLess(s, 0.05)
+
+    def test_degenerate_curve(self):
+        curve = CatmullRomCurve([(1.0, 1.0, 0.0)] * 2, closed=False)
+        s, dist = curve.closest_param_to_point((3.0, 1.0, 0.0))
+        self.assertEqual(s, 0.0)
+        self.assertAlmostEqual(dist, 2.0, places=12)
+
+
+class TestClosestParamToPolyline(unittest.TestCase):
+    CROSSING = [(-1.0 + 0.5 * k, 2.0 + 0.15 * math.sin(1.7 * k),
+                 0.2 - 0.05 * k) for k in range(7)]
+
+    def test_matches_brute_force_on_s_rail(self):
+        curve = CatmullRomCurve(s_rail_points(), closed=False)
+        s, dist = curve.closest_param_to_polyline(self.CROSSING)
+        b_s, b_dist = brute_closest_on_curve(
+            curve, lambda p: dist_point_to_polyline(p, self.CROSSING))
+        self.assertAlmostEqual(dist, b_dist, delta=2e-3)
+        self.assertAlmostEqual(s, b_s, delta=0.02)
+
+    def test_far_polyline_hits_curve_end(self):
+        curve = CatmullRomCurve(s_rail_points(), closed=False)
+        far = [core._add(p, (0.0, 10.0, 0.0)) for p in self.CROSSING]
+        s, _dist = curve.closest_param_to_polyline(far)
+        self.assertGreater(s, 0.9 * curve.total_length)
+
+    def test_degenerate_curve(self):
+        curve = CatmullRomCurve([(1.0, 1.0, 0.0)] * 2, closed=False)
+        s, dist = curve.closest_param_to_polyline([(3.0, 1.0, 0.0),
+                                                   (3.0, 2.0, 0.0)])
+        self.assertEqual(s, 0.0)
+        self.assertAlmostEqual(dist, 2.0, places=12)
+
+
+class TestClosestParamToRay(unittest.TestCase):
+    def test_aiming_matches_brute_force(self):
+        far = CatmullRomCurve(s_rail_points(x_base=3.0, amp=0.3),
+                              closed=False)
+        origin, direction = (0.0, 1.2, 0.1), (1.0, 0.15, -0.05)
+        dn = core._normalize(direction)
+
+        def ray_dist(p):
+            t = max(0.0, core._dot(dn, core._sub(p, origin)))
+            return math.dist(p, core._add(origin, core._mul(dn, t)))
+
+        s, dist = far.closest_param_to_ray(origin, direction)
+        b_s, b_dist = brute_closest_on_curve(far, ray_dist)
+        self.assertAlmostEqual(dist, b_dist, delta=5e-3)
+        self.assertAlmostEqual(s, b_s, delta=0.05)
+
+    def test_ray_parallel_to_straight_rail(self):
+        rail = CatmullRomCurve([(2.0, 0.0, 0.0), (2.0, 6.0, 0.0)],
+                               closed=False)
+        s, dist = rail.closest_param_to_ray((0.0, 1.0, 0.0),
+                                            (0.0, 1.0, 0.0))
+        self.assertAlmostEqual(dist, 2.0, places=9)
+        self.assertGreaterEqual(s, 0.9)
+        self.assertLessEqual(s, 1.6)
+
+    def test_backward_ray_clamps_to_origin(self):
+        rail = CatmullRomCurve([(2.0, 0.0, 0.0), (2.0, 6.0, 0.0)],
+                               closed=False)
+        s, dist = rail.closest_param_to_ray((0.0, 1.0, 0.0),
+                                            (-1.0, 0.0, 0.0))
+        self.assertAlmostEqual(dist, 2.0, places=6)
+        self.assertAlmostEqual(s, 1.0, delta=0.2)
+
+    def test_zero_direction_uses_nearest_sample(self):
+        rail = CatmullRomCurve([(2.0, 0.0, 0.0), (2.0, 6.0, 0.0)],
+                               closed=False)
+        s, dist = rail.closest_param_to_ray((2.05, 2.7, 0.0),
+                                            (0.0, 0.0, 0.0))
+        self.assertAlmostEqual(s, 2.7, delta=0.4)
+        self.assertLess(dist, 0.5)
+
+    def test_degenerate_curve_has_no_candidates(self):
+        curve = CatmullRomCurve([(1.0, 1.0, 0.0)] * 2, closed=False)
+        s, dist = curve.closest_param_to_ray((0.0, 0.0, 0.0),
+                                             (1.0, 0.0, 0.0))
+        self.assertEqual(s, 0.0)
+        self.assertTrue(math.isinf(dist))
+
+
+class TestBlendFlowCurve(unittest.TestCase):
+    ROW_A = [(0.0, 0.0, 0.0), (1.0, 0.45, 0.2), (2.1, 0.6, 0.1),
+             (3.0, 0.2, -0.1), (4.0, 0.0, 0.0)]
+    ROW_B = [(0.2, 3.0, 0.4), (1.2, 3.6, 0.5), (2.2, 3.9, 0.3),
+             (3.2, 3.5, 0.2), (4.1, 3.1, 0.4)]
+    START, END = (0.5, 1.5, 0.1), (4.6, 1.9, 0.3)
+
+    def test_endpoints_and_linear_weight(self):
+        out = blend_flow_curve(self.ROW_A, self.ROW_B, 0.35,
+                               self.START, self.END)
+        self.assertEqual(len(out), 33)
+        self.assertLess(vlen(out[0], self.START), 1e-9)
+        self.assertLess(vlen(out[-1], self.END), 1e-9)
+        only_a = blend_flow_curve(self.ROW_A, self.ROW_B, 0.0,
+                                  self.START, self.END)
+        only_b = blend_flow_curve(self.ROW_A, self.ROW_B, 1.0,
+                                  self.START, self.END)
+        for pa, pb, pm in zip(only_a, only_b, out):
+            expected = core._add(core._mul(pa, 0.65), core._mul(pb, 0.35))
+            self.assertLess(vlen(pm, expected), 1e-9)
+
+    def test_degenerate_source_contributes_nothing(self):
+        degenerate = [(1.0, 1.0, 1.0)] * 5
+        out = blend_flow_curve(degenerate, self.ROW_B, 0.5,
+                               self.START, self.END)
+        only_b = blend_flow_curve(self.ROW_A, self.ROW_B, 1.0,
+                                  self.START, self.END)
+        for k, p in enumerate(out):
+            chord_pt = core._lerp(self.START, self.END, k / 32)
+            expected = core._lerp(chord_pt, only_b[k], 0.5)
+            self.assertLess(vlen(p, expected), 1e-9)
+
+    def test_degenerate_chord_collapses_to_start(self):
+        out = blend_flow_curve(self.ROW_A, self.ROW_B, 0.5,
+                               self.START, self.START)
+        for p in out:
+            self.assertLess(vlen(p, self.START), 1e-9)
+
+
+class TestCopyFlowCurve(unittest.TestCase):
+    REF = [(0.0, 0.0, 0.0), (1.0, 0.5, 0.25), (2.0, 0.8, 0.3),
+           (3.1, 0.4, 0.0), (4.0, 0.1, -0.2)]
+
+    def test_deviation_scaled_never_rotated(self):
+        start = (1.0, 5.0, 0.3)
+        src_chord = core._sub(self.REF[-1], self.REF[0])
+        end = core._add(start, core._mul(src_chord, 1.6))
+        out = copy_flow_curve(self.REF, start, end)
+        curve = CatmullRomCurve(self.REF, closed=False)
+        for k, p in enumerate(out):
+            t = k / 32
+            src_pt = curve.point_at(curve.total_length * t)
+            src_dev = core._sub(
+                src_pt, core._add(self.REF[0], core._mul(src_chord, t)))
+            dev = core._sub(p, core._lerp(start, end, t))
+            self.assertLess(vlen(dev, core._mul(src_dev, 1.6)), 1e-9)
+
+    def test_rotated_chord_keeps_deviation_orientation(self):
+        start = (0.0, 0.0, 0.0)
+        end = (1.5, 3.5, 0.8)   # chord direction differs from the ref's
+        src_chord = core._sub(self.REF[-1], self.REF[0])
+        scale = core._length(core._sub(end, start)) / \
+            core._length(src_chord)
+        out = copy_flow_curve(self.REF, start, end)
+        curve = CatmullRomCurve(self.REF, closed=False)
+        for k, p in enumerate(out):
+            t = k / 32
+            src_pt = curve.point_at(curve.total_length * t)
+            src_dev = core._sub(
+                src_pt, core._add(self.REF[0], core._mul(src_chord, t)))
+            dev = core._sub(p, core._lerp(start, end, t))
+            self.assertLess(vlen(dev, core._mul(src_dev, scale)), 1e-9)
+
+    def test_degenerate_reference_gives_chord(self):
+        out = copy_flow_curve([(2.0, 2.0, 2.0)] * 4,
+                              (0.0, 0.0, 0.0), (3.0, 1.0, 0.0))
+        for k, p in enumerate(out):
+            self.assertLess(
+                vlen(p, core._lerp((0.0, 0.0, 0.0), (3.0, 1.0, 0.0),
+                                   k / 32)), 1e-9)
+
+
 class TestCopyFlows(unittest.TestCase):
     def test_parallel_rails_translate_profile(self):
         rails = straight_rails(4, spacing=1.0, length=10)
@@ -494,6 +875,24 @@ class TestCopyFlows(unittest.TestCase):
         self.assertAlmostEqual(row[1], 3.0, delta=1e-9)
         self.assertAlmostEqual(row[0], 2.5, delta=0.05)
         self.assertAlmostEqual(row[2], 3.5, delta=0.05)
+
+    def test_anchor_on_last_rail(self):
+        rails = straight_rails(3, spacing=1.0, length=10)
+        ref = [(0.0, 0.0, 0.0), (1.0, 0.5, 0.0), (2.0, 1.0, 0.0)]
+        flows = copy_flows(rails, 2, [4.0], ref)
+        row = flows[0]
+        self.assertAlmostEqual(row[2], 4.0, delta=1e-9)
+        self.assertAlmostEqual(row[1], 3.5, delta=0.05)
+        self.assertAlmostEqual(row[0], 3.0, delta=0.05)
+
+    def test_degenerate_reference_direction(self):
+        rails = straight_rails(3, spacing=1.0, length=10)
+        ref = [(1.0, 4.0, 0.0)] * 3    # zero chord: no ray direction
+        flows = copy_flows(rails, 1, [5.0], ref)
+        row = flows[0]
+        self.assertAlmostEqual(row[1], 5.0, delta=1e-9)
+        self.assertEqual(row[0], 0.0)
+        self.assertEqual(row[2], 0.0)
 
 
 class TestBisectFlows(unittest.TestCase):

@@ -9,6 +9,7 @@ requires-python = "==3.11.*"
 dev = [
   "poethepoet>=0.30",
   "bpy==5.0.1",
+  "coverage>=7.15.2",
 ]
 
 [tool.uv]
@@ -29,6 +30,13 @@ cmd = "python test_blender.py"
 [tool.poe.tasks.test]
 help = "Run all tests"
 sequence = ["test-core", "test-blender"]
+
+[tool.poe.tasks.cover-core]
+help = "Branch coverage of core.py via the pure-logic unit tests"
+sequence = [
+  { cmd = "coverage run --branch test_core.py" },
+  { cmd = "coverage report --show-missing --include=core.py" },
+]
 
 [tool.poe.tasks.test-blender-app]
 help = "Run the integration test inside a real Blender (optional; set BLENDER)"
