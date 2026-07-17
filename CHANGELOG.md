@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.12.0...v0.13.0) (2026-07-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* move shared boundary verts with a moved end row
+
+### Features
+
+* add Copy Flow Shape generation mode ([3b9de6c](https://github.com/takagiy/milkyEdgeFlowTools/commit/3b9de6ce5edbf49208ae4fea51c6bc3b12046084))
+* move shared boundary verts with a moved end row ([791e708](https://github.com/takagiy/milkyEdgeFlowTools/commit/791e708ae3b0cb692f51f822454221fb0fe65f46))
+* trim chains that overshoot the strip end rows ([15da6b8](https://github.com/takagiy/milkyEdgeFlowTools/commit/15da6b8947ebbb03dd99403fbf7ad64ca0ec6716))
+
 ## [0.12.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.11.0...v0.12.0) (2026-07-16)
 
 
