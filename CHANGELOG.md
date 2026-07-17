@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.14.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.13.0...v0.14.0) (2026-07-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove Free Side Fit switch, ratio copy only
+
+### Features
+
+* remove Free Side Fit switch, ratio copy only ([11adfb0](https://github.com/takagiy/milkyEdgeFlowTools/commit/11adfb095df3e1e62879569528a234e5595edd4e))
+* treat default end locks like any constraint in Copy Flow Shape ([e48bf2d](https://github.com/takagiy/milkyEdgeFlowTools/commit/e48bf2dc8678ab2802ac466046da95775c8f0bde))
+
+
+### Bug Fixes
+
+* exclude test_data from the extension build ([e16d985](https://github.com/takagiy/milkyEdgeFlowTools/commit/e16d9850a323f2d1947d02243e8a2a43fd77ac50))
+
+
+### Performance Improvements
+
+* vectorize curve internals with numpy ([983bd36](https://github.com/takagiy/milkyEdgeFlowTools/commit/983bd3615f112837cccbd95f35ad0bbfe3295348))
+
 ## [0.13.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.12.0...v0.13.0) (2026-07-17)
 
 
