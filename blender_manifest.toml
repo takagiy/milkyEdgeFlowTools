@@ -17,6 +17,7 @@ paths_exclude_pattern = [
   ".*",
   "/dist/",
   "/test_*.py",
+  "/test_data/",
   "/pyproject.toml",
   "/uv.lock",
   "/requirements.md",
