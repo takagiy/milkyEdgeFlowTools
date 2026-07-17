@@ -332,25 +332,6 @@ _translations = {
         ("*", "Bias of the subdivision density toward curved regions "
               "(0 = uniform)"):
             "分割密度を曲率の高い領域へ寄せる度合い（0 = 等間隔）",
-        ("*", "Free Side Fit"): "自由側のフィット",
-        ("*", "How the unlocked outer chain is reached when a chain is "
-              "locked"):
-            "チェーンのロック時に、ロックされていない側の最外チェーンへ"
-            "フローを到達させる方法",
-        ("*", "Ray Aiming"): "レイ照準",
-        ("*", "Aim rays from the locked rows to place the free-side "
-              "vertices"):
-            "ロックされた行からレイを伸ばして自由側の頂点を決める",
-        ("*", "Ratio Copy"): "比率コピー",
-        ("*", "Anchor the free outer chain at the locked chain's "
-              "arc-length ratios"):
-            "ロックチェーンの弧長比率を自由側の最外チェーンに"
-            "写してアンカーにする",
-        ("*", "Curvature Density"): "曲率密度",
-        ("*", "Anchor the free outer chain at its own curvature-density "
-              "quantiles"):
-            "自由側の最外チェーン自身の曲率密度サンプリングを"
-            "アンカーにする",
         ("*", "Generation Mode"): "生成モード",
         ("*", "How the base flow rows are generated"):
             "フロー行のベース生成方式",

@@ -281,37 +281,29 @@ def default_flow_count(data):
     return max(2, round(outer))
 
 
-def generate(data, count, bias, locked_rails=(), constraints=None,
-             free_fit='RATIO'):
+def generate(data, count, bias, locked_rails=(), constraints=None):
     """Generate base flows via anchored midpoint blending.
 
-    Locked rails anchor the flows at their knots; without locks both
-    outer rails are anchored at the common curvature-density quantiles
-    (Curvature Bias applies there). Everything between the anchors is
-    resolved by core.bisect_flows.
-
-    With locks, `free_fit` picks how the unlocked outer rails are
-    reached: 'RAY' leaves them free (ray aiming), 'RATIO' anchors them
-    at the nearest locked rail's arc-length ratios, 'DENSITY' anchors
-    them at their own curvature-density quantiles.
+    Locked rails anchor the flows at their knots; unlocked outer rails
+    are anchored at the nearest locked rail's arc-length ratios (ratio
+    copy — the winner of the v0.11-v0.12 real-model comparison over ray
+    aiming and curvature density). Without locks both outer rails are
+    anchored at the common curvature-density quantiles (Curvature Bias
+    applies there). Everything between the anchors is resolved by
+    core.bisect_flows.
     """
     curves = data.curves
     rail_count = len(curves)
     if locked_rails:
         anchors = {rj: list(curves[rj].knot_params) for rj in locked_rails}
-        if free_fit != 'RAY':
-            first, last = min(locked_rails), max(locked_rails)
-            for free_rj, src_rj in ((0, first), (rail_count - 1, last)):
-                if free_rj in anchors:
-                    continue
-                if free_fit == 'RATIO':
-                    src_length = curves[src_rj].total_length
-                    ratios = [s / src_length for s in anchors[src_rj]]
-                else:  # 'DENSITY'
-                    ratios = core.common_sample_ratios(
-                        [curves[free_rj]], len(anchors[src_rj]), bias)
-                anchors[free_rj] = [r * curves[free_rj].total_length
-                                    for r in ratios]
+        first, last = min(locked_rails), max(locked_rails)
+        for free_rj, src_rj in ((0, first), (rail_count - 1, last)):
+            if free_rj in anchors:
+                continue
+            src_length = curves[src_rj].total_length
+            ratios = [s / src_length for s in anchors[src_rj]]
+            anchors[free_rj] = [r * curves[free_rj].total_length
+                                for r in ratios]
     else:
         ratios = core.common_sample_ratios(
             [curves[0], curves[rail_count - 1]], count, bias)
@@ -335,8 +327,7 @@ def default_end_constraints(data, flow_count):
 
 
 def compose_flows(data, count, bias, locked_rails=(), constraints=None,
-                  influence=2.0, free_fit='RATIO', mode='BLEND',
-                  copy_row=None):
+                  influence=2.0, mode='BLEND', copy_row=None):
     """Base generation plus decaying propagation of vertex constraints.
 
     The base is generated without vertex constraints; each constrained
@@ -351,7 +342,7 @@ def compose_flows(data, count, bias, locked_rails=(), constraints=None,
     chain's knots, or curvature-density samples on the longer outer
     rail). Vertex constraints still propagate on top.
     """
-    base = generate(data, count, bias, locked_rails, free_fit=free_fit)
+    base = generate(data, count, bias, locked_rails)
     constraints = constraints or {}
     rail_count = len(data.curves)
     curves = data.curves
@@ -695,8 +686,8 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
 
 
 def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
-                     constraints=None, influence=2.0, free_fit='RATIO',
-                     mode='BLEND', copy_row=None):
+                     constraints=None, influence=2.0, mode='BLEND',
+                     copy_row=None):
     """Full UI-independent pipeline on an edit-mesh object.
 
     The end rows get their default endpoint locks; explicit constraints
@@ -711,7 +702,7 @@ def run_regeneration(obj, count=None, bias=0.5, locked_rails=(),
     merged = default_end_constraints(data, count)
     merged.update(constraints or {})
     flows = compose_flows(data, count, bias, locked_rails, merged,
-                          influence, free_fit, mode, copy_row)
+                          influence, mode, copy_row)
     apply_regeneration(bm, data, flows, locked_rails)
     bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
     return len(flows)
@@ -743,7 +734,6 @@ class _Session:
         self.count = default_flow_count(data)
         self.bias = 0.5
         self.influence = 2.0
-        self.free_fit = 'RATIO'
         self.generation_mode = 'BLEND'
         self.locked = set()
         self.constraints = {}
@@ -817,8 +807,7 @@ def _regenerate(session):
         mode, copy_row = 'BLEND', None
     session.flows = compose_flows(session.data, session.count, session.bias,
                                   tuple(session.locked), session.constraints,
-                                  session.influence, session.free_fit,
-                                  mode, copy_row)
+                                  session.influence, mode, copy_row)
     session.count = len(session.flows)
     _refresh_caches(session)
     if reverted:
@@ -870,7 +859,6 @@ def _sync_settings(session):
         settings.flow_count = session.count
         settings.curvature_bias = session.bias
         settings.influence = session.influence
-        settings.free_fit = session.free_fit
         settings.generation_mode = session.generation_mode
     finally:
         _suppress_updates = False
@@ -887,9 +875,6 @@ def _settings_changed(_self, _context):
         _regenerate(_session)
     if abs(settings.influence - _session.influence) > 1.0e-6:
         _session.influence = settings.influence
-        _regenerate(_session)
-    if settings.free_fit != _session.free_fit:
-        _session.free_fit = settings.free_fit
         _regenerate(_session)
     if settings.generation_mode != _session.generation_mode:
         _session.generation_mode = settings.generation_mode
@@ -1076,23 +1061,6 @@ class MilkyRegenSettings(bpy.types.PropertyGroup):
         min=0.0, max=10.0, default=2.0,
         update=_settings_changed,
     )
-    free_fit: bpy.props.EnumProperty(
-        name="Free Side Fit",
-        description=("How the unlocked outer chain is reached when a "
-                     "chain is locked"),
-        items=[
-            ('RAY', "Ray Aiming",
-             "Aim rays from the locked rows to place the free-side "
-             "vertices"),
-            ('RATIO', "Ratio Copy",
-             "Anchor the free outer chain at the locked chain's "
-             "arc-length ratios"),
-            ('DENSITY', "Curvature Density",
-             "Anchor the free outer chain at its own curvature-density "
-             "quantiles"),
-        ],
-        default='RATIO', update=_settings_changed,
-    )
     generation_mode: bpy.props.EnumProperty(
         name="Generation Mode",
         description="How the base flow rows are generated",
@@ -1141,10 +1109,6 @@ class VIEW3D_PT_milky_regen(bpy.types.Panel):
         col.prop(settings, "curvature_bias")
         layout.prop(settings, "influence")
         layout.prop(settings, "generation_mode", text="Generation Mode")
-        row = layout.row()
-        row.enabled = (bool(_session.locked)
-                       and _session.generation_mode != 'COPY')
-        row.prop(settings, "free_fit", text="Free Side Fit")
         if _session.message:
             layout.label(text=_session.message, icon='ERROR')
         row = layout.row()
