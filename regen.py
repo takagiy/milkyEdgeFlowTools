@@ -488,12 +488,24 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
         tokens = tokens[pivot:] + tokens[:pivot]
         outside_tokens.append((tokens, face.material_index, face.smooth))
 
+    # End-path interior verts per rail gap, with their arc-length ratios
+    # along the original end row (captured before anything moves) so they
+    # can follow a moved end row.
     segment_verts = []
     for end, path in enumerate(data.end_paths):
         endpoints = [rail[0 if end == 0 else -1] for rail in data.rails]
-        segment_verts.append(
-            [[bm.verts[vi] for vi in seg]
-             for seg in _split_end_path(path, endpoints)])
+        segments = []
+        for rj, seg in enumerate(_split_end_path(path, endpoints)):
+            verts = [bm.verts[vi] for vi in seg]
+            pts = ([bm.verts[endpoints[rj]].co.copy()]
+                   + [v.co.copy() for v in verts]
+                   + [bm.verts[endpoints[rj + 1]].co.copy()])
+            cums = [0.0]
+            for p, q in zip(pts, pts[1:]):
+                cums.append(cums[-1] + (q - p).length)
+            total = cums[-1] or 1.0
+            segments.append((verts, [c / total for c in cums[1:-1]]))
+        segment_verts.append(segments)
     rail_end_verts = [(bm.verts[rail[0]], bm.verts[rail[-1]])
                       for rail in data.rails]
     locked_rail_verts = {rj: [bm.verts[vi] for vi in data.rails[rj]]
@@ -502,47 +514,59 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
     bmesh.ops.delete(bm, geom=[bm.verts[vi] for vi in doomed],
                      context='VERTS')
 
-    # New grid vertices. End rows sitting on the rail endpoints reuse the
-    # preserved endpoint verts; locked rails reuse all their original
-    # verts; everything else is created on the rail curve.
+    # New grid vertices. End rows always reuse the preserved endpoint
+    # verts — moving them along the rail when the row moved inward so the
+    # outside faces follow through the shared verts; locked rails reuse
+    # all their original verts; everything else is created on the curve.
     grid = [[None] * rail_count for _ in range(flow_count)]
     new_rail_params = [[] for _ in range(rail_count)]
     for rj in range(rail_count):
         curve = data.curves[rj]
         eps = 1.0e-6 * max(curve.total_length, 1.0e-9)
         for i in range(flow_count):
+            param = flows[i][rj]
             if rj in locked_rails:
                 grid[i][rj] = locked_rail_verts[rj][i]
                 new_rail_params[rj].append(curve.knot_params[i])
-            elif i == 0 and flows[i][rj] <= eps:
-                grid[i][rj] = rail_end_verts[rj][0]
-                new_rail_params[rj].append(0.0)
-            elif (i == flow_count - 1
-                    and flows[i][rj] >= curve.total_length - eps):
-                grid[i][rj] = rail_end_verts[rj][1]
-                new_rail_params[rj].append(curve.total_length)
+            elif i in (0, flow_count - 1):
+                end = 0 if i == 0 else 1
+                vert = rail_end_verts[rj][end]
+                moved = (param > eps if end == 0
+                         else param < curve.total_length - eps)
+                if moved:
+                    vert.co = curve.point_at(param)
+                grid[i][rj] = vert
+                new_rail_params[rj].append(param)
             else:
-                grid[i][rj] = bm.verts.new(curve.point_at(flows[i][rj]))
-                new_rail_params[rj].append(flows[i][rj])
+                grid[i][rj] = bm.verts.new(curve.point_at(param))
+                new_rail_params[rj].append(param)
 
-    # Rail vertex sequences including the preserved endpoint verts when an
-    # end row moved inward; used for outside-face mapping and selection.
-    rail_seq_verts = []
-    rail_seq_params = []
-    for rj in range(rail_count):
-        verts_seq = []
-        params_seq = []
-        if grid[0][rj] is not rail_end_verts[rj][0]:
-            verts_seq.append(rail_end_verts[rj][0])
-            params_seq.append(0.0)
-        for i in range(flow_count):
-            verts_seq.append(grid[i][rj])
-            params_seq.append(new_rail_params[rj][i])
-        if grid[flow_count - 1][rj] is not rail_end_verts[rj][1]:
-            verts_seq.append(rail_end_verts[rj][1])
-            params_seq.append(data.curves[rj].total_length)
-        rail_seq_verts.append(verts_seq)
-        rail_seq_params.append(params_seq)
+    # Slide the end-path interior verts onto a moved end row, keeping
+    # their original spacing ratios between the adjacent rails.
+    for end, row in ((0, 0), (1, flow_count - 1)):
+        for rj in range(rail_count - 1):
+            verts, ratios = segment_verts[end][rj]
+            if not verts:
+                continue
+            pa = flows[row][rj]
+            pb = flows[row][rj + 1]
+            la = data.curves[rj].total_length
+            lb = data.curves[rj + 1].total_length
+            if end == 0:
+                moved = pa > 1.0e-6 * la or pb > 1.0e-6 * lb
+            else:
+                moved = (pa < la * (1.0 - 1.0e-6)
+                         or pb < lb * (1.0 - 1.0e-6))
+            if not moved:
+                continue
+            a = grid[row][rj].co
+            b = grid[row][rj + 1].co
+            for v, t in zip(verts, ratios):
+                v.co = a + (b - a) * t
+
+    rail_seq_verts = [[grid[i][rj] for i in range(flow_count)]
+                      for rj in range(rail_count)]
+    rail_seq_params = [list(params) for params in new_rail_params]
 
     new_faces = []
 
@@ -563,34 +587,18 @@ def apply_regeneration(bm, data, flows, locked_rails=()):
         face.smooth = smooth
         new_faces.append(face)
 
-    # Strip faces. Extreme rows still sitting on the endpoints absorb the
-    # kept end-path verts as n-gons; end rows that moved inward instead
-    # get a separate band n-gon connecting them back to the preserved end
-    # boundary (endpoint verts + end path).
-    def row_on_endpoints(row, end, rj):
-        return (grid[row][rj] is rail_end_verts[rj][end]
-                and grid[row][rj + 1] is rail_end_verts[rj + 1][end])
-
+    # Strip faces. The extreme rows absorb the end-path interior verts
+    # (already slid onto the row when it moved) as n-gons.
     for i in range(flow_count - 1):
         for rj in range(rail_count - 1):
             verts = [grid[i][rj]]
-            if i == 0 and row_on_endpoints(0, 0, rj):
-                verts.extend(segment_verts[0][rj])
+            if i == 0:
+                verts.extend(segment_verts[0][rj][0])
             verts.append(grid[i][rj + 1])
             verts.append(grid[i + 1][rj + 1])
-            if (i + 1 == flow_count - 1
-                    and row_on_endpoints(flow_count - 1, 1, rj)):
-                verts.extend(reversed(segment_verts[1][rj]))
+            if i + 1 == flow_count - 1:
+                verts.extend(reversed(segment_verts[1][rj][0]))
             verts.append(grid[i + 1][rj])
-            make_face(verts, data.material_index, data.use_smooth)
-
-    for end, row in ((0, 0), (1, flow_count - 1)):
-        for rj in range(rail_count - 1):
-            if row_on_endpoints(row, end, rj):
-                continue
-            verts = ([rail_end_verts[rj][end]] + segment_verts[end][rj]
-                     + [rail_end_verts[rj + 1][end],
-                        grid[row][rj + 1], grid[row][rj]])
             make_face(verts, data.material_index, data.use_smooth)
 
     # Rebuild the tokenized outside faces: rail runs are replaced by the

@@ -284,8 +284,10 @@ def test_regenerate_trims_overshoot():
 
 
 def test_regenerate_moved_end_row():
-    """Unlocked (constrained inward) end rows create the band n-gon that
-    reconnects the preserved end boundary; propagation off for exactness."""
+    """Unlocked (constrained inward) end rows move the shared boundary
+    verts — rail endpoints and end-path interiors — onto the new row
+    instead of bridging with a band n-gon; propagation off for
+    exactness."""
     obj = build_plain_grid(REG_COLS, REG_ROWS)
     bpy.ops.object.mode_set(mode='EDIT')
     select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
@@ -296,13 +298,19 @@ def test_regenerate_moved_end_row():
     assert count == 3, f"flow count {count}"
 
     bm = bmesh.from_edit_mesh(obj.data)
-    # Rails now hold endpoint + moved row + middle + far endpoint.
+    # Rails hold exactly the moved row + middle + far endpoint; the old
+    # endpoint verts themselves moved to y=1.
     for x in (1.0, 4.0):
         ys = sorted(round(v.co.y, 3) for v in bm.verts
                     if abs(v.co.x - x) < 1e-4)
-        assert ys == [0.0, 1.0, 2.0, 4.0], (x, ys)
-    assert len(bm.verts) == 22, f"vert count {len(bm.verts)}"
-    assert len(bm.faces) == 11, f"face count {len(bm.faces)}"
+        assert ys == [1.0, 2.0, 4.0], (x, ys)
+    # End-path interior verts followed the row.
+    for x in (2.0, 3.0):
+        ys = sorted(round(v.co.y, 3) for v in bm.verts
+                    if abs(v.co.x - x) < 1e-4)
+        assert ys == [1.0, 4.0], (x, ys)
+    assert len(bm.verts) == 20, f"vert count {len(bm.verts)}"
+    assert len(bm.faces) == 10, f"face count {len(bm.faces)}"
     bpy.ops.object.mode_set(mode='OBJECT')
     assert not obj.data.validate(verbose=True), "mesh needed corrections"
 
