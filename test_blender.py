@@ -441,6 +441,256 @@ def test_regenerate_rejects_single_chain():
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+# ---------------------------------------------------------------------------
+# End-to-end regression cases on curved "real" meshes
+# ---------------------------------------------------------------------------
+
+def build_coons_strip(cols, rows, variant=0):
+    """Curved test patch whose four boundary edges are four distinct
+    non-straight 3D curves; the interior is their Coons interpolation."""
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for existing in list(bpy.data.objects):
+        bpy.data.objects.remove(existing)
+    amp = 1.0 + 0.25 * variant
+    width = 4.2 + 0.4 * variant
+    height = 4.6 + 0.3 * variant
+
+    def bottom(u):
+        return (width * u,
+                0.55 * amp * math.sin(math.pi * u + 0.4),
+                0.30 * math.sin(2.0 * math.pi * u))
+
+    def top(u):
+        return (width * u + 0.35 * math.sin(math.pi * u),
+                height + 0.40 * amp * math.sin(2.0 * math.pi * u + 1.1),
+                0.10 - 0.25 * math.cos(math.pi * u))
+
+    def side(v, corner_b, corner_t, sx, sy, sz):
+        base = [corner_b[i] + (corner_t[i] - corner_b[i]) * v
+                for i in range(3)]
+        return (base[0] + sx * math.sin(math.pi * v)
+                + 0.15 * math.sin(3.0 * math.pi * v),
+                base[1] + sy * math.sin(2.0 * math.pi * v),
+                base[2] + sz * math.sin(2.0 * math.pi * v + 0.6))
+
+    def left(v):
+        return side(v, bottom(0.0), top(0.0), 0.45 * amp, 0.20, 0.30)
+
+    def right(v):
+        return side(v, bottom(1.0), top(1.0), -0.50 * amp, 0.25, -0.20)
+
+    c00, c10, c01, c11 = bottom(0.0), bottom(1.0), top(0.0), top(1.0)
+
+    def coons(u, v):
+        b, t, le, r = bottom(u), top(u), left(v), right(v)
+        return tuple(
+            (1 - v) * b[i] + v * t[i] + (1 - u) * le[i] + u * r[i]
+            - ((1 - u) * (1 - v) * c00[i] + u * (1 - v) * c10[i]
+               + (1 - u) * v * c01[i] + u * v * c11[i])
+            for i in range(3))
+
+    verts = [coons(c / (cols - 1), r / (rows - 1))
+             for r in range(rows) for c in range(cols)]
+    faces = []
+    for r in range(rows - 1):
+        for c in range(cols - 1):
+            faces.append((r * cols + c, r * cols + c + 1,
+                          (r + 1) * cols + c + 1, (r + 1) * cols + c))
+    mesh = bpy.data.meshes.new("e2e_strip")
+    mesh.from_pydata(verts, [], faces)
+    mesh.validate()
+    obj = bpy.data.objects.new("e2e_strip", mesh)
+    bpy.context.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    return obj
+
+
+def _select_column_ranges(obj, specs, grid_cols):
+    """specs: (col, first_row, last_row) vert ranges, edges in between."""
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    keys = set()
+    for col, r0, r1 in specs:
+        for r in range(r0, r1):
+            keys.add(frozenset((r * grid_cols + col,
+                                (r + 1) * grid_cols + col)))
+    for e in bm.edges:
+        e.select = frozenset((e.verts[0].index, e.verts[1].index)) in keys
+    for v in bm.verts:
+        v.select = any(e.select for e in v.link_edges)
+    bmesh.update_edit_mesh(obj.data)
+
+
+def _boundary_loop_count(bm):
+    bm.edges.ensure_lookup_table()
+    remaining = {e for e in bm.edges if len(e.link_faces) == 1}
+    vert_edges = {}
+    for e in remaining:
+        for v in e.verts:
+            vert_edges.setdefault(v.index, []).append(e)
+    loops = 0
+    while remaining:
+        loops += 1
+        seed = next(iter(remaining))
+        remaining.discard(seed)
+        stack = [seed]
+        while stack:
+            e = stack.pop()
+            for v in e.verts:
+                for e2 in vert_edges[v.index]:
+                    if e2 in remaining:
+                        remaining.discard(e2)
+                        stack.append(e2)
+    return loops
+
+
+def _rail_pos_index(data, pos):
+    m = len(data.rails)
+    if pos == 'mid':
+        return m // 2
+    x_first = data.curves[0].point_at(
+        0.5 * data.curves[0].total_length)[0]
+    x_last = data.curves[m - 1].point_at(
+        0.5 * data.curves[m - 1].total_length)[0]
+    left_idx = 0 if x_first <= x_last else m - 1
+    return left_idx if pos == 'left' else (m - 1) - left_idx
+
+
+M7, M8, M6, M10 = (7, 6, 0), (8, 7, 1), (6, 5, 2), (10, 8, 3)
+
+E2E_CASES = [
+    dict(name="b2-default", mesh=M7, sel=[1, 5]),
+    dict(name="b2-count4-bias0", mesh=M7, sel=[1, 5],
+         kwargs=dict(count=4, bias=0.0)),
+    dict(name="b2-count9-bias1", mesh=M7, sel=[1, 5],
+         kwargs=dict(count=9, bias=1.0)),
+    dict(name="b2-count3", mesh=M7, sel=[1, 5], kwargs=dict(count=3)),
+    dict(name="b3-default", mesh=M7, sel=[1, 3, 5]),
+    dict(name="b4-default", mesh=M8, sel=[1, 3, 5, 6]),
+    dict(name="b2-boundary-rails", mesh=M7, sel=[0, 6]),
+    dict(name="b2-lock-left", mesh=M7, sel=[1, 5], lock=['left']),
+    dict(name="b2-lock-right", mesh=M7, sel=[1, 5], lock=['right']),
+    dict(name="b3-lock-left", mesh=M7, sel=[1, 3, 5], lock=['left']),
+    dict(name="b4-lock-mid", mesh=M8, sel=[1, 3, 5, 6], lock=['mid']),
+    dict(name="b3-lock-mid", mesh=M7, sel=[1, 3, 5], lock=['mid']),
+    dict(name="b3-lock-both-outer", mesh=M7, sel=[1, 3, 5],
+         lock=['left', 'right']),
+    dict(name="b4-lock-left-mid", mesh=M8, sel=[1, 3, 5, 6],
+         lock=['left', 'mid']),
+    dict(name="b3-lock-all", mesh=M7, sel=[1, 3, 5],
+         lock=['left', 'mid', 'right']),
+    dict(name="b2-endrow-moved-inf0", mesh=M7, sel=[1, 5],
+         cons=[(0, 'left', 0.15), (0, 'right', 0.20)],
+         kwargs=dict(influence=0.0), check_cons=True),
+    dict(name="b2-endrow-moved-inf2", mesh=M7, sel=[1, 5],
+         cons=[(0, 'left', 0.15), (0, 'right', 0.20)],
+         kwargs=dict(influence=2.0)),
+    dict(name="b2-interior-row-inf0", mesh=M7, sel=[1, 5],
+         cons=[(2, 'left', 0.50)], kwargs=dict(influence=0.0),
+         check_cons=True),
+    dict(name="b2-multi-rows-inf1", mesh=M7, sel=[1, 5],
+         cons=[(1, 'left', 0.30), (3, 'right', 0.70)],
+         kwargs=dict(influence=1.0)),
+    dict(name="b2-lock-right-plus-vertex", mesh=M7, sel=[1, 5],
+         lock=['right'], cons=[(2, 'left', 0.45)],
+         kwargs=dict(influence=0.0), check_cons=True),
+    dict(name="b2-top-endrow-moved", mesh=M7, sel=[1, 5],
+         cons=[(5, 'left', 0.85), (5, 'right', 0.80)],
+         kwargs=dict(influence=0.0), check_cons=True),
+    dict(name="b2-both-endrows-moved", mesh=M7, sel=[1, 5],
+         cons=[(0, 'left', 0.12), (0, 'right', 0.15),
+               (5, 'left', 0.88), (5, 'right', 0.85)],
+         kwargs=dict(influence=0.0), check_cons=True),
+    dict(name="overshoot-top", mesh=M7, sel=[(1, 0, 5), (5, 0, 4)]),
+    dict(name="overshoot-both-ends", mesh=M8, sel=[(1, 0, 6), (5, 1, 5)]),
+    dict(name="copy-default", mesh=M7, sel=[1, 5],
+         kwargs=dict(mode='COPY')),
+    dict(name="copy-ref-row2", mesh=M7, sel=[1, 5],
+         cons=[(2, 'left', 0.40), (2, 'right', 0.50)],
+         kwargs=dict(mode='COPY', copy_row=2, influence=0.0),
+         check_cons=True),
+    dict(name="copy-lock-left", mesh=M7, sel=[1, 5], lock=['left'],
+         kwargs=dict(mode='COPY')),
+    dict(name="copy-lock-mid", mesh=M7, sel=[1, 3, 5], lock=['mid'],
+         kwargs=dict(mode='COPY')),
+    dict(name="copy-count8", mesh=M7, sel=[1, 5],
+         kwargs=dict(mode='COPY', count=8)),
+    dict(name="copy-bias1", mesh=M6, sel=[1, 4],
+         kwargs=dict(mode='COPY', bias=1.0)),
+    dict(name="b3-M6-lock-right", mesh=M6, sel=[1, 3, 4], lock=['right']),
+    dict(name="b3-M10-default", mesh=M10, sel=[2, 5, 8]),
+]
+
+
+def _run_e2e_case(case):
+    from mathutils import Vector
+    name = case["name"]
+    cols, rows, variant = case["mesh"]
+    obj = build_coons_strip(cols, rows, variant)
+    bpy.ops.object.mode_set(mode='EDIT')
+    specs = [(c, 0, rows - 1) if isinstance(c, int) else c
+             for c in case["sel"]]
+    _select_column_ranges(obj, specs, cols)
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    assert _boundary_loop_count(bm) == 1, (name, "builder boundary")
+    data = milky_regen.analyze_strip(bm)
+    m = len(data.rails)
+
+    locked = tuple(sorted(_rail_pos_index(data, p)
+                          for p in case.get("lock", ())))
+    constraints = {}
+    expected_points = []
+    for row, pos, ratio in case.get("cons", ()):
+        rj = _rail_pos_index(data, pos)
+        curve = data.curves[rj]
+        s = ratio * curve.total_length
+        constraints[(row, rj)] = s
+        expected_points.append(Vector(curve.point_at(s)))
+    locked_coords = [[bm.verts[vi].co.copy() for vi in data.rails[rj]]
+                     for rj in locked]
+
+    kwargs = dict(case.get("kwargs", {}))
+    count = milky_regen.run_regeneration(
+        obj, locked_rails=locked, constraints=constraints or None,
+        **kwargs)
+
+    if locked:
+        expected_count = len(data.rails[locked[0]])
+    elif kwargs.get("count"):
+        expected_count = kwargs["count"]
+    else:
+        expected_count = milky_regen.default_flow_count(data)
+    assert count == expected_count, (name, count, expected_count)
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    assert not any(len(e.link_faces) > 2 for e in bm.edges), \
+        (name, "non-manifold")
+    assert _boundary_loop_count(bm) == 1, (name, "boundary loops")
+    sel_verts = sum(1 for v in bm.verts if v.select)
+    sel_edges = sum(1 for e in bm.edges if e.select)
+    assert sel_verts == m * count, (name, sel_verts, m * count)
+    assert sel_edges == m * (count - 1), (name, sel_edges)
+    for coords in locked_coords:
+        for co in coords:
+            nearest = min((v.co - co).length for v in bm.verts)
+            assert nearest < 1e-6, (name, "locked vert moved", nearest)
+    if case.get("check_cons"):
+        for point in expected_points:
+            nearest = min((v.co - point).length for v in bm.verts)
+            assert nearest < 1e-4, (name, "constraint missed", nearest)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True), (name, "validate")
+
+
+def test_e2e_curved_mesh_cases():
+    for case in E2E_CASES:
+        _run_e2e_case(case)
+        print(f"  e2e ok: {case['name']}")
+
+
 def main():
     milkyEdgeFlowTools.register()
     obj = fresh_grid()
@@ -493,6 +743,7 @@ def main():
     test_regenerate_copy_flow_shape()
     test_regenerate_copy_flow_shape_defaults_and_errors()
     test_regenerate_rejects_single_chain()
+    test_e2e_curved_mesh_cases()
 
     milkyEdgeFlowTools.unregister()
     print("test_blender: ALL ASSERTIONS PASSED")
