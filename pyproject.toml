@@ -38,6 +38,11 @@ sequence = [
   { cmd = "coverage report --show-missing --include=core.py" },
 ]
 
+[tool.poe.tasks.golden-update]
+help = "Regenerate the E2E golden snapshots (after intentional algorithm changes)"
+cmd = "python test_blender.py"
+env = { E2E_WRITE_GOLDEN = "1" }
+
 [tool.poe.tasks.test-blender-app]
 help = "Run the integration test inside a real Blender (optional; set BLENDER)"
 cmd = '"${BLENDER}" --background --factory-startup --python-exit-code 1 --python test_blender.py'

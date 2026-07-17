@@ -9,6 +9,7 @@ that the crossing rows pulled the vertices back while boundary vertices
 stayed pinned.
 """
 
+import json
 import math
 import os
 import sys
@@ -558,6 +559,33 @@ def _rail_pos_index(data, pos):
     return left_idx if pos == 'left' else (m - 1) - left_idx
 
 
+E2E_GOLDEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "test_data", "e2e_golden.json")
+# Nearest-neighbor tolerance for golden vertex positions. Loose enough
+# to survive float reordering (e.g. a numpy migration), tight enough
+# that any real behavior change trips it.
+E2E_GOLDEN_TOL = 1e-4
+
+
+def _mesh_snapshot(obj):
+    mesh = obj.data
+    return {
+        "verts": sorted([round(v.co.x, 6), round(v.co.y, 6),
+                         round(v.co.z, 6)] for v in mesh.vertices),
+        "face_sizes": sorted(len(f.vertices) for f in mesh.polygons),
+    }
+
+
+def _compare_snapshot(name, snap, golden):
+    assert golden["face_sizes"] == snap["face_sizes"], \
+        (name, "face structure changed")
+    gv, sv = golden["verts"], snap["verts"]
+    assert len(gv) == len(sv), (name, "vert count", len(sv), len(gv))
+    for side_a, side_b in ((gv, sv), (sv, gv)):
+        worst = max(min(math.dist(a, b) for b in side_b) for a in side_a)
+        assert worst < E2E_GOLDEN_TOL, (name, "vert drift", worst)
+
+
 M7, M8, M6, M10 = (7, 6, 0), (8, 7, 1), (6, 5, 2), (10, 8, 3)
 
 E2E_CASES = [
@@ -683,12 +711,29 @@ def _run_e2e_case(case):
             assert nearest < 1e-4, (name, "constraint missed", nearest)
     bpy.ops.object.mode_set(mode='OBJECT')
     assert not obj.data.validate(verbose=True), (name, "validate")
+    return _mesh_snapshot(obj)
 
 
 def test_e2e_curved_mesh_cases():
+    write = bool(os.environ.get("E2E_WRITE_GOLDEN"))
+    golden = {}
+    if not write:
+        with open(E2E_GOLDEN_PATH, encoding="utf-8") as handle:
+            golden = json.load(handle)
+    written = {}
     for case in E2E_CASES:
-        _run_e2e_case(case)
+        snap = _run_e2e_case(case)
+        if write:
+            written[case["name"]] = snap
+        else:
+            assert case["name"] in golden, (case["name"], "no golden entry")
+            _compare_snapshot(case["name"], snap, golden[case["name"]])
         print(f"  e2e ok: {case['name']}")
+    if write:
+        os.makedirs(os.path.dirname(E2E_GOLDEN_PATH), exist_ok=True)
+        with open(E2E_GOLDEN_PATH, "w", encoding="utf-8") as handle:
+            json.dump(written, handle, separators=(",", ":"))
+        print(f"  golden snapshots written: {E2E_GOLDEN_PATH}")
 
 
 def main():
