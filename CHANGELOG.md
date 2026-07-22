@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.17.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.16.0...v0.17.0) (2026-07-22)
+
+
+### Features
+
+* Align Bridges to Center tool ([586b93b](https://github.com/takagiy/milkyEdgeFlowTools/commit/586b93bceaf7561d78cb1931cb0311a8f28fa8fa))
+* show the milkyEdgeFlowTools submenu at the top of the context menu ([585928d](https://github.com/takagiy/milkyEdgeFlowTools/commit/585928d25cf54d39b390ec37b4b026e0c7339072))
+
 ## [0.16.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.15.0...v0.16.0) (2026-07-22)
 
 
