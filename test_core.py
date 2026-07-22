@@ -66,6 +66,7 @@ from core import (
     common_sample_ratios,
     compute_vertex_target,
     copy_flows,
+    align_bridges_to_center,
     decompose_chains,
     enforce_min_spacing,
     equalize_loop_spacing,
@@ -930,6 +931,64 @@ class TestEqualizeLoopSpacing(unittest.TestCase):
         sym = core.perpendicular_gaps(fixed, moving, False, symmetric=True)
         for gap in sym:
             self.assertAlmostEqual(gap, 0.7, places=9)
+
+
+class TestAlignBridgesToCenter(unittest.TestCase):
+    def test_straight_band_perpendicularizes(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(7)]
+        slants = [0.3, -0.3, 0.2, 0.35, -0.25, 0.3, -0.2]
+        moving = [(x + dx, 1.0, 0.0) for x, dx in zip(range(7), slants)]
+        f_out, m_out = align_bridges_to_center(fixed, moving, False)
+        self.assertEqual(f_out, [tuple(map(float, p)) for p in fixed])
+        for k in range(1, 6):   # interior: rung becomes vertical
+            self.assertAlmostEqual(m_out[k][0], float(k), delta=1e-5)
+            self.assertAlmostEqual(m_out[k][1], 1.0, delta=1e-6)
+
+    def test_concentric_arcs_radialize(self):
+        count = 9
+        angles = [math.pi * k / (count - 1) for k in range(count)]
+        jitter = [0.0, 0.08, -0.06, 0.1, -0.08, 0.05, -0.1, 0.07, 0.0]
+        inner = [(math.cos(a), math.sin(a), 0.0) for a in angles]
+        outer = [(2.0 * math.cos(a + j), 2.0 * math.sin(a + j), 0.0)
+                 for a, j in zip(angles, jitter)]
+        _f_out, m_out = align_bridges_to_center(inner, outer, False)
+        for k in range(1, count - 1):
+            ang_f = angles[k]
+            ang_m = math.atan2(m_out[k][1], m_out[k][0])
+            self.assertAlmostEqual(ang_m, ang_f, delta=2e-2)
+
+    def test_symmetric_converges_both_sides(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(7)]
+        slants = [0.0, 0.4, -0.4, 0.3, -0.3, 0.2, 0.0]
+        moving = [(x + dx, 1.0, 0.0) for x, dx in zip(range(7), slants)]
+        f_out, m_out = align_bridges_to_center(fixed, moving, False,
+                                               symmetric=True)
+        for k in range(1, 6):
+            mid_x = (fixed[k][0] + moving[k][0]) / 2.0
+            self.assertAlmostEqual(f_out[k][0], mid_x, delta=2e-2)
+            self.assertAlmostEqual(m_out[k][0], mid_x, delta=2e-2)
+        moved_f = sum(vlen(a, b) for a, b in zip(f_out, fixed))
+        self.assertGreater(moved_f, 0.1)
+
+    def test_factor_blends(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(7)]
+        moving = [(x + 0.4, 1.0, 0.0) for x in range(7)]
+        _f1, full = align_bridges_to_center(fixed, moving, False,
+                                            factor=1.0)
+        _f2, half = align_bridges_to_center(fixed, moving, False,
+                                            factor=0.5)
+        for m, m_full, m_half in zip(moving, full, half):
+            expected = core._lerp(tuple(map(float, m)), m_full, 0.5)
+            self.assertLess(vlen(m_half, expected), 1e-9)
+
+    def test_degenerate_and_parallel_rungs_stay(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(6)]
+        moving = [(x + 0.2, 1.0, 0.0) for x in range(6)]
+        moving[2] = fixed[2]                  # zero-length rung
+        moving[3] = (3.7, 0.0, 0.0)           # rung along the tangent
+        _f_out, m_out = align_bridges_to_center(fixed, moving, False)
+        self.assertLess(vlen(m_out[2], fixed[2]), 1e-6)
+        self.assertLess(vlen(m_out[3], moving[3]), 1e-6)
 
 
 class TestCopyFlows(unittest.TestCase):

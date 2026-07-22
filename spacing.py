@@ -93,6 +93,44 @@ def _positions(fixed_ids, fixed_pts, moving_ids, moving_pts, closed,
     return out
 
 
+def _active_fixed_vert(context, bm, data):
+    """Vertex id pinning a loop when the pivot is Active Element."""
+    pivot = context.scene.tool_settings.transform_pivot_point
+    if pivot != 'ACTIVE_ELEMENT':
+        return None
+    active = bm.select_history.active
+    candidates = []
+    if isinstance(active, bmesh.types.BMVert):
+        candidates = [active.index]
+    elif isinstance(active, bmesh.types.BMEdge):
+        candidates = [v.index for v in active.verts]
+    loop_verts = set(data.loop_a) | set(data.loop_b)
+    for vi in candidates:
+        if vi in loop_verts:
+            return vi
+    return None
+
+
+def run_align(obj, factor=1.0, fixed_vert=None):
+    """UI-independent Align Bridges to Center pipeline.
+
+    fixed_vert: a vertex index on the loop to keep fixed; None uses the
+    rung-midpoint curve as reference and slides both loops.
+    """
+    bm = bmesh.from_edit_mesh(obj.data)
+    data = analyze_loop_pair(bm)
+    fixed_ids, moving_ids, symmetric = _sides(bm, data, fixed_vert)
+    fixed_out, moving_out = core.align_bridges_to_center(
+        _coords(bm, fixed_ids), _coords(bm, moving_ids), data.closed,
+        symmetric, factor)
+    for vi, co in zip(moving_ids, moving_out):
+        bm.verts[vi].co = co
+    if symmetric:
+        for vi, co in zip(fixed_ids, fixed_out):
+            bm.verts[vi].co = co
+    bmesh.update_edit_mesh(obj.data)
+
+
 def run_equalize(obj, distance=None, fixed_vert=None):
     """Full UI-independent pipeline on an edit-mesh object.
 
@@ -171,30 +209,13 @@ class MESH_OT_milky_equalize_loop_spacing(bpy.types.Operator):
         return (obj is not None and obj.type == 'MESH'
                 and context.mode == 'EDIT_MESH')
 
-    def _active_fixed_vert(self, context, bm, data):
-        """Vertex id pinning a loop when the pivot is Active Element."""
-        pivot = context.scene.tool_settings.transform_pivot_point
-        if pivot != 'ACTIVE_ELEMENT':
-            return None
-        active = bm.select_history.active
-        candidates = []
-        if isinstance(active, bmesh.types.BMVert):
-            candidates = [active.index]
-        elif isinstance(active, bmesh.types.BMEdge):
-            candidates = [v.index for v in active.verts]
-        loop_verts = set(data.loop_a) | set(data.loop_b)
-        for vi in candidates:
-            if vi in loop_verts:
-                return vi
-        return None
-
     # Headless / redo path.
     def execute(self, context):
         obj = context.active_object
         try:
             bm = bmesh.from_edit_mesh(obj.data)
             data = analyze_loop_pair(bm)
-            fixed_vert = self._active_fixed_vert(context, bm, data)
+            fixed_vert = _active_fixed_vert(context, bm, data)
             used = run_equalize(obj, self.distance or None, fixed_vert)
         except StripError as exc:
             self.report({'ERROR'},
@@ -215,7 +236,7 @@ class MESH_OT_milky_equalize_loop_spacing(bpy.types.Operator):
                         bpy.app.translations.pgettext_rpt(exc.message))
             return {'CANCELLED'}
 
-        fixed_vert = self._active_fixed_vert(context, bm, data)
+        fixed_vert = _active_fixed_vert(context, bm, data)
         self._obj = obj
         self._data = data
         fixed_ids, moving_ids, symmetric = _sides(bm, data, fixed_vert)
@@ -311,7 +332,41 @@ class MESH_OT_milky_equalize_loop_spacing(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
 
-_classes = (MESH_OT_milky_equalize_loop_spacing,)
+class MESH_OT_milky_align_bridges_to_center(bpy.types.Operator):
+    bl_idname = "mesh.milky_align_bridges_to_center"
+    bl_label = "Align Bridges to Center"
+    bl_description = ("Slide vertices along their loops so each bridge "
+                      "edge points at the local curve center")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    factor: bpy.props.FloatProperty(
+        name="Factor",
+        description="Blend between the original and aligned positions",
+        min=0.0, max=1.0, default=1.0, subtype='FACTOR',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj is not None and obj.type == 'MESH'
+                and context.mode == 'EDIT_MESH')
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            bm = bmesh.from_edit_mesh(obj.data)
+            data = analyze_loop_pair(bm)
+            fixed_vert = _active_fixed_vert(context, bm, data)
+            run_align(obj, self.factor, fixed_vert)
+        except StripError as exc:
+            self.report({'ERROR'},
+                        bpy.app.translations.pgettext_rpt(exc.message))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+_classes = (MESH_OT_milky_equalize_loop_spacing,
+            MESH_OT_milky_align_bridges_to_center)
 
 
 def register():

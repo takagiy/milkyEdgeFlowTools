@@ -264,6 +264,7 @@ class VIEW3D_MT_milky_edge_flow_tools(bpy.types.Menu):
         self.layout.operator(MESH_OT_milky_relax_crossing_flows.bl_idname)
         self.layout.operator("mesh.milky_regenerate_crossing_flows")
         self.layout.operator("mesh.milky_equalize_loop_spacing")
+        self.layout.operator("mesh.milky_align_bridges_to_center")
 
 
 def _draw_context_menu(self, context):
@@ -395,6 +396,14 @@ _translations = {
         ("*", "Shift: precise   LMB/Enter: apply   RMB/Esc: cancel"):
             "Shift: 精密   左クリック/Enter: 適用   "
             "右クリック/Esc: キャンセル",
+        ("Operator", "Align Bridges to Center"): "ブリッジを中心に向ける",
+        ("*", "Align Bridges to Center"): "ブリッジを中心に向ける",
+        ("*", "Slide vertices along their loops so each bridge edge "
+              "points at the local curve center"):
+            "各ブリッジ辺が局所的なカーブの中心を向くように、"
+            "頂点をループ上でスライドさせる",
+        ("*", "Blend between the original and aligned positions"):
+            "元の位置と中心へ向けた位置のブレンド",
     },
 }
 

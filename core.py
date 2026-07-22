@@ -989,6 +989,88 @@ def equalize_loop_spacing(fixed_points, moving_points, closed, distance,
     return list(fixed_pts), moving_out
 
 
+def _tangent_at(curve, s):
+    """Unit tangent of the sampled curve near arc-length param s."""
+    h = max(curve.total_length * 1.0e-3, 1.0e-9)
+    return _normalize(_sub(curve.point_at(s + h), curve.point_at(s - h)))
+
+
+def align_bridges_to_center(fixed_points, moving_points, closed,
+                            symmetric=False, factor=1.0, iterations=5):
+    """Point each bridge edge at the local curve center.
+
+    Vertices slide only along their own loop's fitted curve, so loop
+    shapes are preserved. The center direction is the current rung with
+    the reference tangent component removed (reference: the fixed loop
+    at its knots, or the rung-midpoint curve — rebuilt every iteration —
+    when `symmetric`); each sliding endpoint moves to its curve's
+    closest point to the perpendicular ray from the reference point.
+    Directions and tangents are re-evaluated over a few iterations, and
+    a 1%-of-mean-gap monotonization keeps the loop order. Rungs that
+    are degenerate or almost parallel to the tangent stay put. The
+    result is blended with the originals by `factor`.
+
+    Returns (fixed_out, moving_out); fixed_out equals fixed_points
+    unless symmetric.
+    """
+    fixed_pts = [tuple(map(float, p)) for p in fixed_points]
+    moving_pts = [tuple(map(float, p)) for p in moving_points]
+    n = len(fixed_pts)
+    curve_f = CatmullRomCurve(fixed_pts, closed)
+    curve_m = CatmullRomCurve(moving_pts, closed)
+    params_f = list(curve_f.knot_params)
+    params_m = list(curve_m.knot_params)
+    segments = n if closed else max(1, n - 1)
+    gap_f = 1.0e-2 * curve_f.total_length / segments
+    gap_m = 1.0e-2 * curve_m.total_length / segments
+
+    for _ in range(max(1, iterations)):
+        f_now = ([curve_f.point_at(s) for s in params_f]
+                 if symmetric else fixed_pts)
+        m_now = [curve_m.point_at(s) for s in params_m]
+        if symmetric:
+            ref_pts = [_mul(_add(f, v), 0.5)
+                       for f, v in zip(f_now, m_now)]
+            ref_curve = CatmullRomCurve(ref_pts, closed)
+        else:
+            ref_pts = fixed_pts
+            ref_curve = curve_f
+        ref_knots = ref_curve.knot_params
+
+        next_m = list(params_m)
+        next_f = list(params_f)
+        for k in range(n):
+            rung = _sub(m_now[k], f_now[k])
+            tangent = _tangent_at(ref_curve, ref_knots[k])
+            if tangent is None:
+                continue
+            direction = _normalize(
+                _sub(rung, _mul(tangent, _dot(rung, tangent))))
+            if direction is None:
+                continue
+            s_m, _dist = curve_m.closest_param_to_ray(ref_pts[k],
+                                                      direction)
+            next_m[k] = s_m
+            if symmetric:
+                s_f, _dist = curve_f.closest_param_to_ray(
+                    ref_pts[k], _mul(direction, -1.0))
+                next_f[k] = s_f
+        params_m = enforce_min_spacing(next_m, closed,
+                                       curve_m.total_length, gap_m)
+        if symmetric:
+            params_f = enforce_min_spacing(next_f, closed,
+                                           curve_f.total_length, gap_f)
+
+    moving_out = [_lerp(p, curve_m.point_at(s), factor)
+                  for p, s in zip(moving_pts, params_m)]
+    if symmetric:
+        fixed_out = [_lerp(p, curve_f.point_at(s), factor)
+                     for p, s in zip(fixed_pts, params_f)]
+    else:
+        fixed_out = list(fixed_pts)
+    return fixed_out, moving_out
+
+
 def perpendicular_gaps(fixed_points, moving_points, closed,
                        symmetric=False):
     """Current per-pair perpendicular gap under the section metric.

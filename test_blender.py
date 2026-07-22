@@ -591,6 +591,56 @@ def test_equalize_auto_distance_and_operator():
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+def test_align_bridges_fixed_and_symmetric():
+    from milkyEdgeFlowTools import spacing as milky_spacing
+    n = 5
+    obj = build_loop_band([1.0] * n)   # straight loops, slanted rungs
+    bm = bmesh.from_edit_mesh(obj.data)
+    orig = {v.index: v.co.copy() for v in bm.verts}
+
+    milky_spacing.run_align(obj, fixed_vert=0)
+    bm = bmesh.from_edit_mesh(obj.data)
+    for vi in range(n):   # fixed loop untouched
+        assert (bm.verts[vi].co - orig[vi]).length < 1e-9, vi
+    for k in range(1, n - 1):   # interior rungs became perpendicular
+        co = bm.verts[n + k].co
+        assert abs(co.x - float(k)) < 1e-4, (k, co.x)
+        assert abs(co.y - 1.0) < 1e-6, (k, co.y)
+
+    obj = build_loop_band([1.0] * n)
+    bm = bmesh.from_edit_mesh(obj.data)
+    orig = {v.index: v.co.copy() for v in bm.verts}
+    milky_spacing.run_align(obj, fixed_vert=None)   # symmetric
+    bm = bmesh.from_edit_mesh(obj.data)
+    moved_fixed = sum((bm.verts[k].co - orig[k]).length for k in range(n))
+    assert moved_fixed > 1e-3, "symmetric mode left loop A untouched"
+    for k in range(1, n - 1):
+        mid_x = (orig[k].x + orig[n + k].x) / 2.0
+        assert abs(bm.verts[k].co.x - mid_x) < 5e-2, k
+        assert abs(bm.verts[n + k].co.x - mid_x) < 5e-2, k
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True)
+
+
+def test_align_bridges_operator_pivot():
+    n = 5
+    obj = build_loop_band([1.0] * n)
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    bpy.context.scene.tool_settings.transform_pivot_point = \
+        'ACTIVE_ELEMENT'
+    bm.select_history.add(bm.verts[n + 1])   # active on loop B
+    bmesh.update_edit_mesh(obj.data)
+    orig_b = [bm.verts[n + k].co.copy() for k in range(n)]
+    result = bpy.ops.mesh.milky_align_bridges_to_center(factor=1.0)
+    assert result == {'FINISHED'}, result
+    bm = bmesh.from_edit_mesh(obj.data)
+    for k in range(n):   # loop B (active side) stays fixed
+        assert (bm.verts[n + k].co - orig_b[k]).length < 1e-9, k
+    bpy.context.scene.tool_settings.transform_pivot_point = 'MEDIAN_POINT'
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
 def test_equalize_rejects_bad_selection():
     from milkyEdgeFlowTools import spacing as milky_spacing
 
@@ -964,6 +1014,8 @@ def main():
     test_equalize_symmetric_median()
     test_equalize_closed_rings()
     test_equalize_auto_distance_and_operator()
+    test_align_bridges_fixed_and_symmetric()
+    test_align_bridges_operator_pivot()
     test_equalize_rejects_bad_selection()
     test_e2e_curved_mesh_cases()
 
