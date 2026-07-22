@@ -267,8 +267,9 @@ class VIEW3D_MT_milky_edge_flow_tools(bpy.types.Menu):
 
 
 def _draw_context_menu(self, context):
-    self.layout.separator()
+    # Prepended to the context menu: submenu first, separator below.
     self.layout.menu(VIEW3D_MT_milky_edge_flow_tools.bl_idname)
+    self.layout.separator()
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +414,7 @@ def register():
         bpy.utils.register_class(cls)
     regen.register()
     spacing.register()
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(_draw_context_menu)
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.prepend(_draw_context_menu)
     bpy.app.translations.register(__name__, _translations)
 
 
