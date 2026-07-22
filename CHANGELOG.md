@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.14.0...v0.15.0) (2026-07-22)
+
+
+### Features
+
+* Equalize Loop Spacing tool ([5ce9e99](https://github.com/takagiy/milkyEdgeFlowTools/commit/5ce9e9921708e1793608f280f8ff965494d79b3c))
+
 ## [0.14.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.13.0...v0.14.0) (2026-07-17)
 
 
