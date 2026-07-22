@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.16.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.15.0...v0.16.0) (2026-07-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* cross-section slide for Equalize Loop Spacing
+
+### Features
+
+* cross-section slide for Equalize Loop Spacing ([b11a64a](https://github.com/takagiy/milkyEdgeFlowTools/commit/b11a64aebc491f6ad3e6633d19a811fc0c64ed3c))
+
 ## [0.15.0](https://github.com/takagiy/milkyEdgeFlowTools/compare/v0.14.0...v0.15.0) (2026-07-22)
 
 
