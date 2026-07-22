@@ -896,26 +896,107 @@ def copy_flows(curves, anchor_rail, anchor_params, ref_points, samples=32):
     return params
 
 
-def _tangent_at(curve, s):
-    """Unit tangent of the sampled curve near arc-length param s."""
-    h = max(curve.total_length * 1.0e-3, 1.0e-9)
-    return _normalize(_sub(curve.point_at(s + h), curve.point_at(s - h)))
+def _adjacent_edges(n, k, closed):
+    """Index pairs of the base edges adjacent to vertex k."""
+    edges = []
+    if closed:
+        edges.append(((k - 1) % n, k))
+        edges.append((k, (k + 1) % n))
+    else:
+        if k > 0:
+            edges.append((k - 1, k))
+        if k < n - 1:
+            edges.append((k, k + 1))
+    return edges
+
+
+def _line_foot(a, b, p):
+    """Perpendicular foot of p on the infinite line through a-b."""
+    e = _sub(b, a)
+    ee = _dot(e, e)
+    if ee < 1.0e-18:
+        return None
+    return _add(a, _mul(e, _dot(_sub(p, a), e) / ee))
+
+
+def _section_offset(base_pts, closed, k, p, anchor, target):
+    """Cross-section slide candidate for vertex p at index k.
+
+    For each adjacent base edge (treated as an infinite line) the
+    candidate is the perpendicular foot of p plus `target` along the
+    perpendicular — i.e. p slides inside the plane spanned by the edge
+    and p itself, so a neighbor's jitter never leaks in. The candidate
+    closer to `anchor` (the paired base point) wins. Returns None when
+    every section is degenerate (zero-length edge, or p on the line).
+    """
+    best = None
+    best_key = math.inf
+    for ia, ib in _adjacent_edges(len(base_pts), k, closed):
+        foot = _line_foot(base_pts[ia], base_pts[ib], p)
+        if foot is None:
+            continue
+        normal = _normalize(_sub(p, foot))
+        if normal is None:
+            continue
+        candidate = _add(foot, _mul(normal, target))
+        key = math.dist(candidate, anchor)
+        if key < best_key:
+            best_key = key
+            best = candidate
+    return best
 
 
 def equalize_loop_spacing(fixed_points, moving_points, closed, distance,
-                          symmetric=False, clamp_factor=2.0, iterations=3):
+                          symmetric=False):
     """Uniform perpendicular gap between two bridged loops.
 
-    Each moving vertex slides only along its own rung direction
-    (moving - fixed), so the bridging flow is preserved; the slide
-    length is chosen so the vertex ends up `distance` away from the
-    reference curve (the fixed loop, or the rung midpoints when
-    `symmetric`). A tangent-frame estimate is refined by measuring the
-    real curve distance. Slides are clamped to clamp_factor * target;
-    zero-length rungs stay put.
+    Each vertex slides inside its own cross-section: the plane spanned
+    by an adjacent reference edge (fixed loop edges, or the
+    rung-midpoint polyline's when `symmetric`) and the vertex itself.
+    The new position is the perpendicular foot on the edge's infinite
+    line plus the target distance along the perpendicular, so the gap
+    is exact by construction; of the two adjacent sections the
+    candidate closer to the paired reference point is taken. The
+    vertex's station along the edge and its angle around it are
+    preserved, while a jagged partner loop no longer contaminates the
+    slide direction (the strict 1D rung-direction constraint of the
+    earlier version is relaxed to this 2D in-section slide).
 
-    Returns (fixed_out, moving_out) point lists; fixed_out equals
-    fixed_points unless symmetric.
+    Returns (fixed_out, moving_out); fixed_out equals fixed_points
+    unless symmetric (which offsets both sides by distance/2 about the
+    rung midpoints, preserving them only approximately). Vertices with
+    no valid section stay put.
+    """
+    fixed_pts = [tuple(map(float, p)) for p in fixed_points]
+    moving_pts = [tuple(map(float, p)) for p in moving_points]
+    if symmetric:
+        base_pts = [_mul(_add(f, v), 0.5)
+                    for f, v in zip(fixed_pts, moving_pts)]
+        target = 0.5 * distance
+        fixed_out = [
+            _section_offset(base_pts, closed, k, f, base_pts[k], target)
+            or f
+            for k, f in enumerate(fixed_pts)]
+        moving_out = [
+            _section_offset(base_pts, closed, k, v, base_pts[k], target)
+            or v
+            for k, v in enumerate(moving_pts)]
+        return fixed_out, moving_out
+    moving_out = [
+        _section_offset(fixed_pts, closed, k, v, fixed_pts[k], distance)
+        or v
+        for k, v in enumerate(moving_pts)]
+    return list(fixed_pts), moving_out
+
+
+def perpendicular_gaps(fixed_points, moving_points, closed,
+                       symmetric=False):
+    """Current per-pair perpendicular gap under the section metric.
+
+    The gap of a vertex is its distance to the nearest adjacent
+    reference edge line (fixed loop, or the rung-midpoint polyline plus
+    the other side's share when `symmetric`); degenerate sections fall
+    back to the rung length.
     """
     fixed_pts = [tuple(map(float, p)) for p in fixed_points]
     moving_pts = [tuple(map(float, p)) for p in moving_points]
@@ -924,47 +1005,27 @@ def equalize_loop_spacing(fixed_points, moving_points, closed, distance,
                     for f, v in zip(fixed_pts, moving_pts)]
     else:
         base_pts = fixed_pts
-    curve = CatmullRomCurve(base_pts, closed)
-    target = 0.5 * distance if symmetric else distance
-    cap = clamp_factor * target
 
-    fixed_out, moving_out = [], []
-    for f, v, base, knot in zip(fixed_pts, moving_pts, base_pts,
-                                curve.knot_params):
-        direction = _normalize(_sub(v, f))
-        if direction is None:
-            fixed_out.append(f)
-            moving_out.append(v)
-            continue
-        tangent = _tangent_at(curve, knot)
-        if tangent is None:
-            perp_mag = 1.0
-        else:
-            along = _dot(direction, tangent)
-            perp_mag = _length(_sub(direction, _mul(tangent, along)))
-        if perp_mag < 1.0e-9:
-            slide = cap
-        else:
-            slide = min(target / perp_mag, cap)
-        for _ in range(iterations):
-            probe = _add(base, _mul(direction, slide))
-            _s, dist_now = curve.closest_param_to_point(probe)
-            if symmetric:
-                # Balance the curvature bias between the two sides.
-                mirror = _sub(base, _mul(direction, slide))
-                _s2, dist_mirror = curve.closest_param_to_point(mirror)
-                dist_now = 0.5 * (dist_now + dist_mirror)
-            if dist_now < 1.0e-12:
-                break
-            slide = min(max(slide * (target / dist_now), 0.0), cap)
-        offset = _mul(direction, slide)
+    def line_dist(p, k):
+        dists = []
+        for ia, ib in _adjacent_edges(len(base_pts), k, closed):
+            foot = _line_foot(base_pts[ia], base_pts[ib], p)
+            if foot is not None:
+                dists.append(math.dist(p, foot))
+        return min(dists) if dists else None
+
+    gaps = []
+    for k, (f, v) in enumerate(zip(fixed_pts, moving_pts)):
+        dv = line_dist(v, k)
         if symmetric:
-            fixed_out.append(_sub(base, offset))
-            moving_out.append(_add(base, offset))
+            df = line_dist(f, k)
+            if dv is None or df is None:
+                gaps.append(math.dist(f, v))
+            else:
+                gaps.append(dv + df)
         else:
-            fixed_out.append(f)
-            moving_out.append(_add(base, offset))
-    return fixed_out, moving_out
+            gaps.append(dv if dv is not None else math.dist(f, v))
+    return gaps
 
 
 def bisect_flows(curves, anchors, samples=32):

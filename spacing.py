@@ -77,18 +77,9 @@ def _coords(bm, ids):
 def mean_gap(bm, data, fixed_vert=None):
     """Current mean perpendicular gap for the given mode."""
     fixed_ids, moving_ids, symmetric = _sides(bm, data, fixed_vert)
-    fixed_pts = _coords(bm, fixed_ids)
-    moving_pts = _coords(bm, moving_ids)
-    if symmetric:
-        base = [core._mul(core._add(f, m), 0.5)
-                for f, m in zip(fixed_pts, moving_pts)]
-        curve = core.CatmullRomCurve(base, data.closed)
-        gaps = [curve.closest_param_to_point(f)[1]
-                + curve.closest_param_to_point(m)[1]
-                for f, m in zip(fixed_pts, moving_pts)]
-    else:
-        curve = core.CatmullRomCurve(fixed_pts, data.closed)
-        gaps = [curve.closest_param_to_point(m)[1] for m in moving_pts]
+    gaps = core.perpendicular_gaps(
+        _coords(bm, fixed_ids), _coords(bm, moving_ids), data.closed,
+        symmetric)
     return sum(gaps) / len(gaps)
 
 

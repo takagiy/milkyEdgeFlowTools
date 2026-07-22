@@ -512,12 +512,10 @@ def test_equalize_open_fixed_side():
     bm = bmesh.from_edit_mesh(obj.data)
     for vi in range(n):   # fixed loop untouched
         assert (bm.verts[vi].co - orig[vi]).length < 1e-9, vi
-    for k in range(n):    # moving loop: perpendicular distance == 1
+    for k in range(n):    # moving loop: exact offset, station preserved
         co = bm.verts[n + k].co
-        assert abs(math.hypot(co.y, co.z) - 1.0) < 2e-3, (k, co)
-        d_old = (orig[n + k] - orig[k]).normalized()
-        d_new = (co - orig[k]).normalized()
-        assert (d_old - d_new).length < 1e-6, (k, "rung direction")
+        assert abs(math.hypot(co.y, co.z) - 1.0) < 1e-6, (k, co)
+        assert abs(co.x - orig[n + k].x) < 1e-6, (k, "station moved")
     bpy.ops.object.mode_set(mode='OBJECT')
     assert not obj.data.validate(verbose=True)
 
@@ -533,10 +531,10 @@ def test_equalize_symmetric_median():
     milky_spacing.run_equalize(obj, distance=1.0, fixed_vert=None)
 
     bm = bmesh.from_edit_mesh(obj.data)
-    for k in range(n):    # rung midpoints preserved
+    for k in range(n):    # rung midpoints approximately preserved
         mid_old = (orig[k] + orig[n + k]) / 2.0
         mid_new = (bm.verts[k].co + bm.verts[n + k].co) / 2.0
-        assert (mid_old - mid_new).length < 1e-9, k
+        assert (mid_old - mid_new).length < 2e-2, k
         assert (bm.verts[k].co - orig[k]).length > 1e-6, "fixed side moved"
     bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -553,10 +551,13 @@ def test_equalize_closed_rings():
     milky_spacing.run_equalize(obj, distance=0.8, fixed_vert=0)
 
     bm = bmesh.from_edit_mesh(obj.data)
-    curve = milky_core.CatmullRomCurve(inner, closed=True)
     for k in range(n):
-        _s, dist = curve.closest_param_to_point(tuple(bm.verts[n + k].co))
-        assert abs(dist - 0.8) < 3e-3, (k, dist)
+        # Exactly 0.8 from the chosen adjacent inner edge line.
+        p = tuple(bm.verts[n + k].co)
+        dists = [math.dist(p, milky_core._line_foot(inner[ia], inner[ib],
+                                                    p))
+                 for ia, ib in milky_core._adjacent_edges(n, k, True)]
+        assert any(abs(d - 0.8) < 1e-6 for d in dists), (k, dists)
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
