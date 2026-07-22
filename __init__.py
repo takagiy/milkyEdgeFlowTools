@@ -13,6 +13,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty
 
 from . import core
 from . import regen
+from . import spacing
 
 MAX_RING_STEPS = 16
 
@@ -262,6 +263,7 @@ class VIEW3D_MT_milky_edge_flow_tools(bpy.types.Menu):
     def draw(self, context):
         self.layout.operator(MESH_OT_milky_relax_crossing_flows.bl_idname)
         self.layout.operator("mesh.milky_regenerate_crossing_flows")
+        self.layout.operator("mesh.milky_equalize_loop_spacing")
 
 
 def _draw_context_menu(self, context):
@@ -372,6 +374,26 @@ _translations = {
             "+/-: フロー本数   Enter: 適用   Esc: キャンセル",
         ("*", "Apply"): "適用",
         ("*", "Cancel"): "キャンセル",
+        ("Operator", "Equalize Loop Spacing"): "ループ間隔を均一化",
+        ("*", "Equalize Loop Spacing"): "ループ間隔を均一化",
+        ("*", "Slide two bridged edge loops so their perpendicular gap "
+              "is uniform"):
+            "ブリッジされた2本のエッジループをスライドさせ、"
+            "垂線間隔を均一化する",
+        ("*", "Target perpendicular distance between the loops "
+              "(0 = keep the current average)"):
+            "ループ間の目標垂線距離（0 = 現在の平均を維持）",
+        ("*", "Select exactly two parallel edge loops"):
+            "平行なエッジループをちょうど2本選択してください",
+        ("*", "Loops must both be open or both closed"):
+            "2本のループは開閉が一致している必要があります",
+        ("*", "Loops must be bridged by a single quad strip"):
+            "2本のループは1列の面帯でブリッジされている必要があります",
+        ("*", "Active locked"): "アクティブ側を固定",
+        ("*", "Median"): "中点（対称）",
+        ("*", "Shift: precise   LMB/Enter: apply   RMB/Esc: cancel"):
+            "Shift: 精密   左クリック/Enter: 適用   "
+            "右クリック/Esc: キャンセル",
     },
 }
 
@@ -390,6 +412,7 @@ def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
     regen.register()
+    spacing.register()
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(_draw_context_menu)
     bpy.app.translations.register(__name__, _translations)
 
@@ -397,6 +420,7 @@ def register():
 def unregister():
     bpy.app.translations.unregister(__name__)
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(_draw_context_menu)
+    spacing.unregister()
     regen.unregister()
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

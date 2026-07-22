@@ -443,6 +443,177 @@ def test_regenerate_rejects_single_chain():
 
 
 # ---------------------------------------------------------------------------
+# Equalize Loop Spacing
+# ---------------------------------------------------------------------------
+
+def build_loop_band(gaps, slant=0.3, closed=False):
+    """Quad band between two loops; loop A is straight (open) or an
+    octagon (closed), loop B sits gap[i] away with slanted rungs."""
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for existing in list(bpy.data.objects):
+        bpy.data.objects.remove(existing)
+    n = len(gaps)
+    verts = []
+    if closed:
+        for k in range(n):
+            ang = 2.0 * math.pi * k / n
+            verts.append((math.cos(ang), math.sin(ang), 0.05 * (k % 2)))
+        for k, g in enumerate(gaps):
+            ang = 2.0 * math.pi * k / n
+            r = 1.0 + g
+            verts.append((r * math.cos(ang), r * math.sin(ang),
+                          0.05 * (k % 2)))
+    else:
+        for k in range(n):
+            verts.append((float(k), 0.0, 0.0))
+        for k, g in enumerate(gaps):
+            dx = slant if k < n - 1 else -slant
+            verts.append((k + dx, g, 0.0))
+    faces = []
+    pairs = n if closed else n - 1
+    for k in range(pairs):
+        nxt = (k + 1) % n
+        faces.append((k, nxt, n + nxt, n + k))
+    mesh = bpy.data.meshes.new("loop_band")
+    mesh.from_pydata(verts, [], faces)
+    mesh.validate()
+    obj = bpy.data.objects.new("loop_band", mesh)
+    bpy.context.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    keys = set()
+    for k in range(pairs):
+        nxt = (k + 1) % n
+        keys.add(frozenset((k, nxt)))
+        keys.add(frozenset((n + k, n + nxt)))
+    for e in bm.edges:
+        e.select = frozenset((e.verts[0].index, e.verts[1].index)) in keys
+    for v in bm.verts:
+        v.select = any(e.select for e in v.link_edges)
+    bmesh.update_edit_mesh(obj.data)
+    return obj
+
+
+def test_equalize_open_fixed_side():
+    from milkyEdgeFlowTools import spacing as milky_spacing
+    gaps = [0.5, 0.9, 0.7, 1.2, 0.6]
+    obj = build_loop_band(gaps)
+    n = len(gaps)
+    bm = bmesh.from_edit_mesh(obj.data)
+    orig = {v.index: v.co.copy() for v in bm.verts}
+
+    used = milky_spacing.run_equalize(obj, distance=1.0, fixed_vert=0)
+    assert abs(used - 1.0) < 1e-9, used
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    for vi in range(n):   # fixed loop untouched
+        assert (bm.verts[vi].co - orig[vi]).length < 1e-9, vi
+    for k in range(n):    # moving loop: perpendicular distance == 1
+        co = bm.verts[n + k].co
+        assert abs(math.hypot(co.y, co.z) - 1.0) < 2e-3, (k, co)
+        d_old = (orig[n + k] - orig[k]).normalized()
+        d_new = (co - orig[k]).normalized()
+        assert (d_old - d_new).length < 1e-6, (k, "rung direction")
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert not obj.data.validate(verbose=True)
+
+
+def test_equalize_symmetric_median():
+    from milkyEdgeFlowTools import spacing as milky_spacing
+    gaps = [0.8, 0.95, 0.85, 1.05, 0.9]
+    obj = build_loop_band(gaps)
+    n = len(gaps)
+    bm = bmesh.from_edit_mesh(obj.data)
+    orig = {v.index: v.co.copy() for v in bm.verts}
+
+    milky_spacing.run_equalize(obj, distance=1.0, fixed_vert=None)
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    for k in range(n):    # rung midpoints preserved
+        mid_old = (orig[k] + orig[n + k]) / 2.0
+        mid_new = (bm.verts[k].co + bm.verts[n + k].co) / 2.0
+        assert (mid_old - mid_new).length < 1e-9, k
+        assert (bm.verts[k].co - orig[k]).length > 1e-6, "fixed side moved"
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+def test_equalize_closed_rings():
+    from milkyEdgeFlowTools import core as milky_core
+    from milkyEdgeFlowTools import spacing as milky_spacing
+    gaps = [0.4, 0.9, 0.6, 1.1, 0.5, 0.8, 1.0, 0.7]
+    obj = build_loop_band(gaps, closed=True)
+    n = len(gaps)
+    bm = bmesh.from_edit_mesh(obj.data)
+    inner = [tuple(bm.verts[k].co) for k in range(n)]
+
+    milky_spacing.run_equalize(obj, distance=0.8, fixed_vert=0)
+
+    bm = bmesh.from_edit_mesh(obj.data)
+    curve = milky_core.CatmullRomCurve(inner, closed=True)
+    for k in range(n):
+        _s, dist = curve.closest_param_to_point(tuple(bm.verts[n + k].co))
+        assert abs(dist - 0.8) < 3e-3, (k, dist)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+def test_equalize_auto_distance_and_operator():
+    from milkyEdgeFlowTools import spacing as milky_spacing
+    gaps = [0.5, 0.9, 0.7, 1.2, 0.6]
+    obj = build_loop_band(gaps)
+    n = len(gaps)
+    bm = bmesh.from_edit_mesh(obj.data)
+    orig = {v.index: v.co.copy() for v in bm.verts}
+
+    # Auto distance = current mean perpendicular gap.
+    used = milky_spacing.run_equalize(obj, distance=None, fixed_vert=0)
+    assert 0.4 < used < 1.3, used
+
+    # Operator path with the Active Element pivot: loop B stays fixed.
+    obj = build_loop_band(gaps)
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    bpy.context.scene.tool_settings.transform_pivot_point = \
+        'ACTIVE_ELEMENT'
+    bm.select_history.add(bm.verts[n + 2])
+    bmesh.update_edit_mesh(obj.data)
+    orig_b = [bm.verts[n + k].co.copy() for k in range(n)]
+    result = bpy.ops.mesh.milky_equalize_loop_spacing(distance=0.9)
+    assert result == {'FINISHED'}, result
+    bm = bmesh.from_edit_mesh(obj.data)
+    for k in range(n):
+        assert (bm.verts[n + k].co - orig_b[k]).length < 1e-9, k
+    bpy.context.scene.tool_settings.transform_pivot_point = 'MEDIAN_POINT'
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+def test_equalize_rejects_bad_selection():
+    from milkyEdgeFlowTools import spacing as milky_spacing
+
+    # Three loops selected (grid columns).
+    obj = build_plain_grid(REG_COLS, REG_ROWS)
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_grid_columns(obj, (1, 2, 4), REG_COLS, REG_ROWS)
+    try:
+        milky_spacing.run_equalize(obj)
+        raise AssertionError("three loops were accepted")
+    except milky_spacing.StripError as exc:
+        assert "exactly two" in exc.message, exc.message
+
+    # Two loops that are not bridged (columns 1 and 4 of the grid).
+    select_grid_columns(obj, (1, 4), REG_COLS, REG_ROWS)
+    try:
+        milky_spacing.run_equalize(obj)
+        raise AssertionError("unbridged loops were accepted")
+    except milky_spacing.StripError as exc:
+        assert "bridged" in exc.message, exc.message
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+# ---------------------------------------------------------------------------
 # End-to-end regression cases on curved "real" meshes
 # ---------------------------------------------------------------------------
 
@@ -788,6 +959,11 @@ def main():
     test_regenerate_copy_flow_shape()
     test_regenerate_copy_flow_shape_defaults_and_errors()
     test_regenerate_rejects_single_chain()
+    test_equalize_open_fixed_side()
+    test_equalize_symmetric_median()
+    test_equalize_closed_rings()
+    test_equalize_auto_distance_and_operator()
+    test_equalize_rejects_bad_selection()
     test_e2e_curved_mesh_cases()
 
     milkyEdgeFlowTools.unregister()

@@ -68,6 +68,7 @@ from core import (
     copy_flows,
     decompose_chains,
     enforce_min_spacing,
+    equalize_loop_spacing,
     flow_direction,
     bisect_flows,
     order_chains,
@@ -832,6 +833,73 @@ class TestCopyFlowCurve(unittest.TestCase):
             self.assertLess(
                 vlen(p, core._lerp((0.0, 0.0, 0.0), (3.0, 1.0, 0.0),
                                    k / 32)), 1e-9)
+
+
+class TestEqualizeLoopSpacing(unittest.TestCase):
+    def test_straight_line_slanted_rungs(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(5)]
+        gaps = [0.5, 0.9, 0.7, 1.2, 0.6]
+        slants = [0.4, 0.4, 0.4, -0.4, -0.4]
+        moving = [(x + dx, g, 0.0)
+                  for x, g, dx in zip(range(5), gaps, slants)]
+        f_out, m_out = equalize_loop_spacing(fixed, moving, False, 1.0)
+        self.assertEqual(f_out, [tuple(map(float, p)) for p in fixed])
+        for f, m_old, m_new in zip(fixed, moving, m_out):
+            # Perpendicular distance to the straight fixed loop is W.
+            self.assertAlmostEqual(math.hypot(m_new[1], m_new[2]), 1.0,
+                                   delta=1.5e-3)
+            d_old = core._normalize(core._sub(m_old, f))
+            d_new = core._normalize(core._sub(m_new, f))
+            self.assertLess(vlen(d_old, d_new), 1e-6)
+
+    def test_symmetric_keeps_rung_midpoints(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(5)]
+        gaps = [0.8, 0.95, 0.85, 1.05, 0.9]
+        moving = [(x + 0.3, g, 0.0) for x, g in zip(range(5), gaps)]
+        f_out, m_out = equalize_loop_spacing(fixed, moving, False, 1.0,
+                                             symmetric=True)
+        mids = [core._mul(core._add(f, m), 0.5)
+                for f, m in zip(fixed, moving)]
+        mid_curve = CatmullRomCurve(mids, closed=False)
+        for f, m, f_new, m_new in zip(fixed, moving, f_out, m_out):
+            mid_old = core._mul(core._add(f, m), 0.5)
+            mid_new = core._mul(core._add(f_new, m_new), 0.5)
+            self.assertLess(vlen(mid_old, mid_new), 1e-9)
+            # Each side sits W/2 from the mid curve (the residual is the
+            # curvature bias split evenly between the two sides).
+            self.assertAlmostEqual(
+                mid_curve.closest_param_to_point(m_new)[1], 0.5,
+                delta=3e-2)
+            self.assertAlmostEqual(
+                mid_curve.closest_param_to_point(f_new)[1], 0.5,
+                delta=3e-2)
+
+    def test_closed_ring_reaches_curve_distance(self):
+        import core as c
+        fixed = [(math.cos(k * math.pi / 4), math.sin(k * math.pi / 4),
+                  0.1 * (-1.0) ** k) for k in range(8)]
+        radial = [1.4, 1.9, 1.6, 2.1, 1.5, 1.8, 2.0, 1.7]
+        moving = [tuple(x * r for x in f) for f, r in zip(fixed, radial)]
+        f_out, m_out = equalize_loop_spacing(fixed, moving, True, 0.8)
+        curve = c.CatmullRomCurve(fixed, closed=True)
+        for m_new in m_out:
+            _s, dist = curve.closest_param_to_point(m_new)
+            self.assertAlmostEqual(dist, 0.8, delta=2e-3)
+
+    def test_near_parallel_rung_clamped(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(5)]
+        moving = [(x + 0.2, 0.8, 0.0) for x in range(5)]
+        moving[2] = (2.0 + 1.0, 0.02, 0.0)   # rung almost along the loop
+        _f_out, m_out = equalize_loop_spacing(fixed, moving, False, 1.0)
+        slide = vlen(m_out[2], fixed[2])
+        self.assertAlmostEqual(slide, 2.0, delta=1e-6)
+
+    def test_degenerate_rung_stays_put(self):
+        fixed = [(float(x), 0.0, 0.0) for x in range(4)]
+        moving = [(x + 0.0, 0.7, 0.0) for x in range(4)]
+        moving[1] = fixed[1]
+        _f_out, m_out = equalize_loop_spacing(fixed, moving, False, 1.0)
+        self.assertEqual(m_out[1], tuple(map(float, fixed[1])))
 
 
 class TestCopyFlows(unittest.TestCase):
